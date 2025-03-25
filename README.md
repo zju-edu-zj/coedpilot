@@ -47,3 +47,5 @@ conda activate coedpilot
 python -m pip install -r requirements.txt
 ```
 
+sk-2bff962ae5fc4bd8a929587208fda159
+
