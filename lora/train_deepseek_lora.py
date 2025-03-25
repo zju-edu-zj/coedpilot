@@ -265,13 +265,8 @@ def main():
             logger.info(f"Loaded {len(train_features)} training features")
         else:
             # 从原始文件处理特征
-            train_examples = read_examples(args.train_filename)
-            train_features = prepare_training_features(train_examples, tokenizer, args)
-            
-            # 如果需要，保存处理好的特征
-            if args.save_processed_data:
-                os.makedirs(args.processed_data_output_dir, exist_ok=True)
-                save_features(train_features, os.path.join(args.processed_data_output_dir, 'train_features.pt'))
+            logger.info("unexpected, please save processed data first")
+            exit()
         
         all_input_ids = torch.tensor([f.source_ids for f in train_features], dtype=torch.long)
         all_attention_mask = torch.tensor([f.source_mask for f in train_features], dtype=torch.long)
@@ -300,7 +295,7 @@ def main():
         
         # 开始训练
         logger.info("***** Running training *****")
-        logger.info("  Num examples = %d", len(train_examples))
+        logger.info("  Num examples = %d", len(train_features))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num epochs = %d", args.num_train_epochs)
         
@@ -356,10 +351,8 @@ def main():
                     # 需要加载原始示例用于评估
                     eval_examples = read_examples(args.dev_filename)
                 else:
-                    eval_examples = read_examples(args.dev_filename)
-                    eval_features = prepare_validation_features(eval_examples, tokenizer, args)
-                    if args.save_processed_data:
-                        save_features(eval_features, os.path.join(args.processed_data_output_dir, 'dev_features.pt'))
+                    logger.info("unexpected, please save processed data first")
+                    exit()
                 
                 all_input_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
                 all_attention_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)
@@ -371,7 +364,7 @@ def main():
                 )
                 
                 logger.info("***** Running evaluation *****")
-                logger.info("  Num examples = %d", len(eval_examples))
+                logger.info("  Num examples = %d", len(eval_features))
                 logger.info("  Batch size = %d", args.eval_batch_size)
                 
                 model.eval()
@@ -424,10 +417,8 @@ def main():
             test_features = load_features(os.path.join(args.processed_data_dir, 'test_features.pt'))
             test_examples = read_examples(args.test_filename)
         else:
-            test_examples = read_examples(args.test_filename)
-            test_features = prepare_test_features(test_examples, tokenizer, args)
-            if args.save_processed_data:
-                save_features(test_features, os.path.join(args.processed_data_output_dir, 'test_features.pt'))
+            logger.info("unexpected, please save processed data first")
+            exit()
         
         # 加载最佳模型
         best_model_path = os.path.join(args.output_dir, 'checkpoint-best-bleu')

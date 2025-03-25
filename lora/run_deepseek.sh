@@ -8,8 +8,8 @@ PROCESSED_DATA_DIR="./processed_data"              # 处理后的数据目录
 LOG_FILE="output.txt"                              # 日志文件
 
 # 数据文件
-TRAIN_FILE="${DATA_DIR}/train.jsonl"
-DEV_FILE="${DATA_DIR}/dev.jsonl"
+TRAIN_FILE="${DATA_DIR}/new_test.jsonl"
+DEV_FILE="${DATA_DIR}/test2.jsonl"
 TEST_FILE="${DATA_DIR}/test.jsonl"
 
 # 训练参数
@@ -44,6 +44,7 @@ case $MODE in
     # 只处理数据并保存
     python train_deepseek_lora.py \
       --model_name_or_path $MODEL_NAME \
+      --output_dir $OUTPUT_DIR \
       --train_filename $TRAIN_FILE \
       --dev_filename $DEV_FILE \
       --test_filename $TEST_FILE \
@@ -74,8 +75,7 @@ case $MODE in
       --use_8bit \
       --do_train \
       --do_eval \
-      --save_processed_data \
-      --processed_data_output_dir $PROCESSED_DATA_DIR 2>&1 | tee -a $LOG_FILE
+      --processed_data_dir $PROCESSED_DATA_DIR 2>&1 | tee -a $LOG_FILE
     ;;
     
   "train_from_processed")
@@ -151,8 +151,7 @@ case $MODE in
       --use_4bit \
       --do_train \
       --do_eval \
-      --save_processed_data \
-      --processed_data_output_dir $PROCESSED_DATA_DIR 2>&1 | tee -a $LOG_FILE
+      --processed_data_dir $PROCESSED_DATA_DIR 2>&1 | tee -a $LOG_FILE
     ;;
     
   *)
