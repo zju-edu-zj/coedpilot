@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 设置基本参数
-MODEL_NAME="deepseek-ai/deepseek-coder-6.7b-base"  # 模型名称
+MODEL_NAME="deepseek-ai/deepseek-coder-1.3b-base"  # 模型名称
 OUTPUT_DIR="./output/deepseek_lora"                # 输出目录
 DATA_DIR="./data"                                  # 数据目录
 PROCESSED_DATA_DIR="./processed_data"              # 处理后的数据目录

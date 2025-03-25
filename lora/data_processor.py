@@ -46,7 +46,7 @@ def read_examples(filename):
                 js['idx'] = idx
 
             code = js['code_tokens']  # 包含<mask>标记的代码
-            target = js['target_tokens']  # 目标代码
+            target = js['docstring_tokens']  # 目标代码
             label_window = js['label_window']  # 替换<mask>的操作
 
             # 检查mask数量与label_window长度是否匹配
@@ -60,6 +60,8 @@ def read_examples(filename):
 def convert_examples_to_features(examples, tokenizer, args, stage=None):
     """Convert examples to features that can be used for model training."""
     features = []
+    prompts = []  # 新增：用于存储所有提示
+    
     for example_index, example in enumerate(
         tqdm(examples, desc='convert examples to features')
     ):
@@ -104,15 +106,15 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
         if len(parts) > 1:
             i = 1
             while i < len(parts):
-                current_part = parts[i].strip()
+                current_part = parts[i].lstrip()  # 先只去除左侧空白
                 
                 # 检查是否是remove操作
                 if current_part.startswith("remove "):
-                    removed_code = current_part[len("remove "):]
+                    removed_code = current_part[len("remove "):].rstrip()  # 提取后再去除右侧空白
                     
                     # 检查下一个是否是add操作（形成一个完整的替换）
-                    if i + 1 < len(parts) and parts[i+1].strip().startswith("add "):
-                        added_code = parts[i+1].strip()[len("add "):]
+                    if i + 1 < len(parts) and parts[i+1].lstrip().startswith("add "):
+                        added_code = parts[i+1].lstrip()[len("add "):].rstrip()  # 同样先lstrip后rstrip
                         prior_edits.append(f"REPLACED: \n{removed_code}\nWITH: \n{added_code}")
                         i += 2  # 跳过下一个add操作
                     else:
@@ -121,12 +123,12 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
                         i += 1
                 # 检查是否是add操作
                 elif current_part.startswith("add "):
-                    added_code = current_part[len("add "):]
+                    added_code = current_part[len("add "):].rstrip()  # 提取后再去除右侧空白
                     prior_edits.append(f"ADDED: \n{added_code}")
                     i += 1
                 else:
                     # 其他未知操作，直接添加
-                    prior_edits.append(current_part)
+                    prior_edits.append(current_part.rstrip())  # 确保右侧空白也被处理
                     i += 1
         
         prior_edits_text = "\n\n".join(prior_edits)
@@ -146,6 +148,13 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
                      f"PREVIOUS EDITS:\n{prior_edits_text}\n\n"
                      f"GENERATED CODE:")
             target = example.target
+        
+        # 新增：保存提示信息
+        prompts.append({
+            "example_index": example_index,
+            "prompt": prompt,
+            "target": target
+        })
         
         if stage == "pure":
             print(f"prompt: {prompt}")
@@ -181,7 +190,9 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
                 target_mask=target_mask,
             )
         )
-    return features
+    
+    # 新增：返回提示信息和特征
+    return features, prompts
 
 
 def prepare_training_features(examples, tokenizer, args):
@@ -205,11 +216,26 @@ def save_features(features, output_file):
     logger.info(f"Features saved to {output_file}")
 
 
+def save_prompts(prompts, output_file):
+    """将提示信息保存到文件"""
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(prompts, f, ensure_ascii=False, indent=2)
+    logger.info(f"Prompts saved to {output_file}")
+
+
 def load_features(input_file):
     """从文件加载处理好的特征"""
     features = torch.load(input_file)
     logger.info(f"Loaded {len(features)} features from {input_file}")
     return features
+
+
+def load_prompts(input_file):
+    """从文件加载处理好的提示信息"""
+    with open(input_file, 'r', encoding='utf-8') as f:
+        prompts = json.load(f)
+    logger.info(f"Loaded {len(prompts)} prompts from {input_file}")
+    return prompts
 
 
 def process_and_save_data(train_file, dev_file, test_file, tokenizer, args, output_dir):
@@ -222,20 +248,23 @@ def process_and_save_data(train_file, dev_file, test_file, tokenizer, args, outp
     # 处理训练集
     if train_file:
         train_examples = read_examples(train_file)
-        train_features = prepare_training_features(train_examples, tokenizer, args)
+        train_features, train_prompts = prepare_training_features(train_examples, tokenizer, args)
         save_features(train_features, os.path.join(output_dir, 'train_features.pt'))
+        save_prompts(train_prompts, os.path.join(output_dir, 'train_prompts.json'))
     
     # 处理验证集
     if dev_file:
         dev_examples = read_examples(dev_file)
-        dev_features = prepare_validation_features(dev_examples, tokenizer, args)
+        dev_features, dev_prompts = prepare_validation_features(dev_examples, tokenizer, args)
         save_features(dev_features, os.path.join(output_dir, 'dev_features.pt'))
+        save_prompts(dev_prompts, os.path.join(output_dir, 'dev_prompts.json'))
     
     # 处理测试集
     if test_file:
         test_examples = read_examples(test_file)
-        test_features = prepare_test_features(test_examples, tokenizer, args)
-        save_features(test_features, os.path.join(output_dir, 'test_features.pt')) 
+        test_features, test_prompts = prepare_test_features(test_examples, tokenizer, args)
+        save_features(test_features, os.path.join(output_dir, 'test_features.pt'))
+        save_prompts(test_prompts, os.path.join(output_dir, 'test_prompts.json'))
 
 if __name__ == "__main__":
     examples = read_examples("new_test.jsonl")
