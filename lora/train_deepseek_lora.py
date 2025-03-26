@@ -210,7 +210,7 @@ def main():
     # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
     special_tokens = {
-        "additional_special_tokens": ["<ADD_CODE>", "<REPLACE_CODE>"]
+        "additional_special_tokens": ["<ADD_CODE>", "<REPLACE_CODE>", "<KEEP_CODE>"]
     }
     num_added_tokens = tokenizer.add_special_tokens(special_tokens)
     logger.info(f"Added {num_added_tokens} new special tokens")
@@ -269,7 +269,7 @@ def main():
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()  # 打印可训练参数比例
     
-    # 然后在加载模型后调整嵌入大小
+    # 调整嵌入大小以适应新添加的特殊标记
     model.resize_token_embeddings(len(tokenizer))
     
     if args.do_train:
@@ -434,14 +434,12 @@ def main():
             # 直接处理测试数据
             logger.info("处理测试数据...")
             test_examples = read_examples(args.test_filename)
-            test_features = convert_examples_to_features(
+            test_features, prompts = convert_examples_to_features(
                 examples=test_examples,
                 tokenizer=tokenizer,
-                max_source_length=args.max_source_length,
-                max_target_length=args.max_target_length,
-                stage='test'
+                args=args
             )
-            logger.info(f"处理了 {len(test_features)} 条测试特征")
+            logger.info(f"处理了 {len(test_features)} 条测试特征，prompt: {prompts}")
         
         # 加载最佳模型
         best_model_path = os.path.join(args.output_dir, 'checkpoint-best-bleu')

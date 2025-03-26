@@ -10,7 +10,7 @@ LOG_FILE="output.txt"                              # 日志文件
 # 数据文件
 TRAIN_FILE="${DATA_DIR}/new_test.jsonl"
 DEV_FILE="${DATA_DIR}/test2.jsonl"
-TEST_FILE="${DATA_DIR}/test.jsonl"
+TEST_FILE="${DATA_DIR}/new_train.jsonl"
 
 # 训练参数
 BATCH_SIZE=4                  # 批次大小

@@ -60,7 +60,12 @@ def read_examples(filename):
 def convert_examples_to_features(examples, tokenizer, args, stage=None):
     """Convert examples to features that can be used for model training."""
     features = []
-    prompts = []  # 用于存储所有提示
+    prompts = []  # 新增：用于存储所有提示
+    
+    # 收集所有提示和目标，以便后续批量处理
+    all_prompts = []
+    all_targets = []
+    all_example_indices = []
     
     for example_index, example in enumerate(
         tqdm(examples, desc='convert examples to features')
@@ -68,74 +73,137 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
         # 解析输入数据
         source_code = example.source
         
-        # 将</s>替换为tokenizer的eos_token
-        source_code = source_code.replace("</s>", tokenizer.eos_token)
+        # 分离上下文和先前编辑
+        parts = source_code.split("</s>")
+        context = parts[0]  # 第一个</s>之前的部分是上下文
         
         # 处理上下文中的<mask>标记
-        source_tokens = source_code.split()
+        context_lines = context.split('\n')
         label_idx = 0
-        processed_tokens = []
+        processed_lines = []
         
-        for token in source_tokens:
-            if token == "<mask>":
+        for line in context_lines:
+            if "<mask>" in line:
                 # 根据label_window中的操作类型替换<mask>
                 if label_idx < len(example.edit_ops):
                     op = example.edit_ops[label_idx]
                     if op == "add":
-                        # 保留特殊标记
-                        processed_tokens.append("<ADD_CODE>")
+                        # 标记为添加操作
+                        processed_line = line.replace("<mask>", "<ADD_CODE>")
                     elif op == "replace":
-                        # 保留特殊标记
-                        processed_tokens.append("<REPLACE_CODE>")
+                        # 标记为替换操作
+                        processed_line = line.replace("<mask>", "<REPLACE_CODE>")
                     else:  # keep或其他操作
-                        # 将keep也设置为特殊标记
-                        processed_tokens.append("<KEEP_CODE>")
+                        # 保持不变，移除<mask>
+                        processed_line = line.replace("<mask>", "")
                     label_idx += 1
                 else:
                     # 如果没有对应的操作，默认保持不变
-                    processed_tokens.append("<KEEP_CODE>")
+                    processed_line = line.replace("<mask>", "")
+                processed_lines.append(processed_line)
             else:
-                processed_tokens.append(token)
+                processed_lines.append(line)
         
-        processed_source = " ".join(processed_tokens)
-        logger.info(f"tokenizer.eos_token: {tokenizer.eos_token}, tokenizer.cls_token: {tokenizer.cls_token}, tokenizer.sep_token: {tokenizer.sep_token}, tokenizer.pad_token: {tokenizer.pad_token}")
-        # 对处理后的源代码进行tokenize
-        source_tokens = tokenizer.tokenize(processed_source)[:args.max_source_length - 2]
-        source_tokens = [tokenizer.cls_token] + source_tokens + [tokenizer.sep_token]
-        source_ids = tokenizer.convert_tokens_to_ids(source_tokens)
-        source_mask = [1] * len(source_ids)
-        padding_length = args.max_source_length - len(source_ids)
-        source_ids += [tokenizer.pad_token_id] * padding_length
-        source_mask += [0] * padding_length
+        processed_context = '\n'.join(processed_lines)
         
-        # 处理目标
+        # 收集先前的编辑信息，将连续的remove和add视为一个编辑
+        prior_edits = []
+        if len(parts) > 1:
+            i = 1
+            while i < len(parts):
+                current_part = parts[i].lstrip()  # 先只去除左侧空白
+                
+                # 检查是否是remove操作
+                if current_part.startswith("remove "):
+                    removed_code = current_part[len("remove "):].rstrip()  # 提取后再去除右侧空白
+                    
+                    # 检查下一个是否是add操作（形成一个完整的替换）
+                    if i + 1 < len(parts) and parts[i+1].lstrip().startswith("add "):
+                        added_code = parts[i+1].lstrip()[len("add "):].rstrip()
+                        if added_code.strip():
+                            prior_edits.append(f"REPLACED:\n```python\n{removed_code}\n```\nWITH:\n```python\n{added_code}\n```")
+                        else:
+                            prior_edits.append(f"REPLACED:\n```python\n{removed_code}\n```\nWITH: [EMPTY]")
+                        i += 2  # 跳过下一个add操作
+                    else:
+                        # 单独的remove操作
+                        prior_edits.append(f"REMOVED:\n```python\n{removed_code}\n```")
+                        i += 1
+                # 检查是否是add操作
+                elif current_part.startswith("add "):
+                    added_code = current_part[len("add "):].rstrip()  # 提取后再去除右侧空白
+                    prior_edits.append(f"ADDED:\n```python\n{added_code}\n```")
+                    i += 1
+                else:
+                    # 保留PR描述和其他信息
+                    prior_edits.append(current_part.rstrip())
+                    i += 1
+        
+        prior_edits_text = "\n\n".join(prior_edits)
+        
+        # 构建提示模板
+        prompt = (f"Code context:\n{processed_context}\n\n"
+                 f"Previous edits:\n{prior_edits_text}\n\n"
+                 f"Output:")
+        
         if stage == 'test':
-            target_tokens = tokenizer.tokenize('None')
+            target = ""
         else:
-            target_tokens = tokenizer.tokenize(example.target)[:args.max_target_length - 2]
+            target = example.target
         
-        target_tokens = [tokenizer.cls_token] + target_tokens + [tokenizer.sep_token]
-        target_ids = tokenizer.convert_tokens_to_ids(target_tokens)
-        target_mask = [1] * len(target_ids)
-        padding_length = args.max_target_length - len(target_ids)
-        target_ids += [tokenizer.pad_token_id] * padding_length
-        target_mask += [0] * padding_length
+        # 收集提示和目标
+        all_prompts.append(prompt)
+        all_targets.append(target)
+        all_example_indices.append(example_index)
         
-        # 记录提示信息
+        # 保存提示信息
         prompts.append({
             "example_index": example_index,
-            "source": processed_source,
-            "target": example.target
+            "prompt": prompt,
+            "target": target
         })
         
-        if example_index < 1:
+        if stage == "pure":
+            print(f"prompt: {prompt}")
+            print(f"target: {target}")
+            return
+
+    if stage == "pure":
+        print(f"prompt: {all_prompts[0]}")
+        print(f"target: {all_targets[0]}")
+        return
+    
+    # 批量处理所有提示和目标，启用填充
+    tokenized_prompts = tokenizer(
+        all_prompts, 
+        truncation=True, 
+        max_length=args.max_source_length,
+        padding='max_length'  # 确保所有序列长度一致
+    )
+    
+    tokenized_targets = tokenizer(
+        all_targets, 
+        truncation=True, 
+        max_length=args.max_target_length,
+        padding='max_length'  # 确保所有序列长度一致
+    )
+    
+    # 创建特征
+    for i, example_index in enumerate(all_example_indices):
+        source_ids = tokenized_prompts["input_ids"][i]
+        target_ids = tokenized_targets["input_ids"][i]
+        
+        source_mask = tokenized_prompts["attention_mask"][i]
+        target_mask = tokenized_targets["attention_mask"][i]
+        
+        if i < 1:
             if stage == 'train':
                 logger.info('*** Example ***')
-                logger.info('idx: {}'.format(example.idx))
-                logger.info('source_tokens: {}'.format([x for x in source_tokens]))
+                logger.info('idx: {}'.format(examples[example_index].idx))
+                logger.info('prompt: {}'.format(all_prompts[i]))
+                logger.info('target: {}'.format(all_targets[i]))
                 logger.info('source_ids: {}'.format(' '.join(map(str, source_ids))))
                 logger.info('source_mask: {}'.format(' '.join(map(str, source_mask))))
-                logger.info('target_tokens: {}'.format([x for x in target_tokens]))
                 logger.info('target_ids: {}'.format(' '.join(map(str, target_ids))))
                 logger.info('target_mask: {}'.format(' '.join(map(str, target_mask))))
         
@@ -149,6 +217,14 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
             )
         )
     
+    # 验证所有特征长度一致
+    if features:
+        source_lengths = [len(f.source_ids) for f in features]
+        target_lengths = [len(f.target_ids) for f in features]
+        logger.info(f"Stage: {stage}, Source lengths: min={min(source_lengths)}, max={max(source_lengths)}")
+        logger.info(f"Stage: {stage}, Target lengths: min={min(target_lengths)}, max={max(target_lengths)}")
+    
+    # 返回提示信息和特征
     return features, prompts
 
 
