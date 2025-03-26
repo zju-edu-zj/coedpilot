@@ -407,19 +407,25 @@ def main():
             
             tr_loss += epoch_loss
             
+            # 保存每个epoch的模型
+            output_dir = os.path.join(args.output_dir, f'checkpoint-epoch-{epoch}')
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
             # # 更频繁地评估和保存
             # if args.do_eval and global_step % args.eval_steps == 0:
             #     # 评估代码...
                 
-            if global_step % args.save_steps == 0:
-                # 保存检查点
-                model_to_save = model.module if hasattr(model, 'module') else model
-                output_dir = os.path.join(args.output_dir, f'checkpoint-{global_step}')
-                if not os.path.exists(output_dir):
-                    os.makedirs(output_dir)
-                model_to_save.save_pretrained(output_dir)
-                tokenizer.save_pretrained(output_dir)
-                logger.info(f"Saved model checkpoint to {output_dir}")
+            # if global_step % args.save_steps == 0:
+            #     # 保存检查点
+            #     model_to_save = model.module if hasattr(model, 'module') else model
+            #     output_dir = os.path.join(args.output_dir, f'checkpoint-{global_step}')
+            #     if not os.path.exists(output_dir):
+            #         os.makedirs(output_dir)
+            #     model_to_save.save_pretrained(output_dir)
+            #     tokenizer.save_pretrained(output_dir)
+            #     logger.info(f"Saved model checkpoint to {output_dir}")
             
             # 评估模型
             if args.do_eval:
