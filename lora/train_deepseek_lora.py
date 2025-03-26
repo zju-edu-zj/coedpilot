@@ -413,7 +413,19 @@ def main():
                 
                 # 计算BLEU分数
                 references = [ex.target for ex in eval_examples]
-                bleu_score = bleu.compute_bleu(references, predictions)
+                bleu_output_dict = {}
+                for idx, (pred, ex) in enumerate(zip(predictions, eval_examples)):
+                    bleu_output_dict[str(ex.idx)] = ([pred], ex.target)  # 注意这里将单个预测包装成列表
+                
+                with open(os.path.join(args.output_dir, f'eval_epoch_{epoch}_pred_gold.json'), 'w') as f:
+                    json.dump(bleu_output_dict, f, indent=2)
+                
+                # 使用bleu模块的computeMaps_multiple和bleuFromMaps方法计算BLEU分数
+                (goldMap, predictionMap) = bleu.computeMaps_multiple(
+                    os.path.join(args.output_dir, f'eval_epoch_{epoch}_pred_gold.json'),
+                    1  # 因为eval只有一个预测，所以beam_size=1
+                )
+                bleu_score = round(bleu.bleuFromMaps(goldMap, predictionMap)[0], 2)
                 logger.info(f"BLEU score: {bleu_score}")
                 
                 # 保存最佳模型
