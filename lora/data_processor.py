@@ -62,6 +62,11 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
     features = []
     prompts = []  # 新增：用于存储所有提示
     
+    # 收集所有提示和目标，以便后续批量处理
+    all_prompts = []
+    all_targets = []
+    all_example_indices = []
+    
     for example_index, example in enumerate(
         tqdm(examples, desc='convert examples to features')
     ):
@@ -114,42 +119,45 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
                     
                     # 检查下一个是否是add操作（形成一个完整的替换）
                     if i + 1 < len(parts) and parts[i+1].lstrip().startswith("add "):
-                        added_code = parts[i+1].lstrip()[len("add "):].rstrip()  # 同样先lstrip后rstrip
-                        prior_edits.append(f"REPLACED: \n{removed_code}\nWITH: \n{added_code}")
+                        added_code = parts[i+1].lstrip()[len("add "):].rstrip()
+                        if added_code.strip():
+                            prior_edits.append(f"REPLACED:\n```python\n{removed_code}\n```\nWITH:\n```python\n{added_code}\n```")
+                        else:
+                            prior_edits.append(f"REPLACED:\n```python\n{removed_code}\n```\nWITH: [EMPTY]")
                         i += 2  # 跳过下一个add操作
                     else:
                         # 单独的remove操作
-                        prior_edits.append(f"REMOVED: \n{removed_code}")
+                        prior_edits.append(f"REMOVED:\n```python\n{removed_code}\n```")
                         i += 1
                 # 检查是否是add操作
                 elif current_part.startswith("add "):
                     added_code = current_part[len("add "):].rstrip()  # 提取后再去除右侧空白
-                    prior_edits.append(f"ADDED: \n{added_code}")
+                    prior_edits.append(f"ADDED:\n```python\n{added_code}\n```")
                     i += 1
                 else:
-                    # 其他未知操作，直接添加
-                    prior_edits.append(current_part.rstrip())  # 确保右侧空白也被处理
+                    # 保留PR描述和其他信息
+                    prior_edits.append(current_part.rstrip())
                     i += 1
         
         prior_edits_text = "\n\n".join(prior_edits)
         
         # 构建提示模板
-        if stage == 'test':
-            prompt = (f"Given the following code context with edit markers and previous edits, "
-                     f"generate the appropriate code:\n\n"
-                     f"CODE CONTEXT:\n{processed_context}\n\n"
-                     f"PREVIOUS EDITS:\n{prior_edits_text}\n\n"
-                     f"GENERATED CODE:")
-            target = ""
-        else:
-            prompt = (f"Given the following code context with edit markers and previous edits, "
-                     f"generate the appropriate code:\n\n"
-                     f"CODE CONTEXT:\n{processed_context}\n\n"
-                     f"PREVIOUS EDITS:\n{prior_edits_text}\n\n"
-                     f"GENERATED CODE:")
-            target = example.target
+        prompt = (f"Complete the code editing task by generating the appropriate code.\n\n"
+                 f"Edit markers in the context:\n"
+                 f"- <ADD_CODE>: Generate code to insert at this position\n"
+                 f"- <REPLACE_CODE>: Generate code to replace the existing code at this position\n\n"
+                 f"Code context:\n```\n{processed_context}\n```\n\n"
+                 f"Previous edits:\n{prior_edits_text}\n\n"
+                 f"Generated code:\n")
         
-        # 新增：保存提示信息
+        target = example.target
+        
+        # 收集提示和目标
+        all_prompts.append(prompt)
+        all_targets.append(target)
+        all_example_indices.append(example_index)
+        
+        # 保存提示信息
         prompts.append({
             "example_index": example_index,
             "prompt": prompt,
@@ -161,21 +169,40 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
             print(f"target: {target}")
             return
 
-        tokenized_prompt = tokenizer(prompt, truncation=True, max_length=args.max_source_length)
-        tokenized_target = tokenizer(target, truncation=True, max_length=args.max_target_length)
+    if stage == "pure":
+        print(f"prompt: {all_prompts[0]}")
+        print(f"target: {all_targets[0]}")
+        return
+    
+    # 批量处理所有提示和目标，启用填充
+    tokenized_prompts = tokenizer(
+        all_prompts, 
+        truncation=True, 
+        max_length=args.max_source_length,
+        padding='max_length'  # 确保所有序列长度一致
+    )
+    
+    tokenized_targets = tokenizer(
+        all_targets, 
+        truncation=True, 
+        max_length=args.max_target_length,
+        padding='max_length'  # 确保所有序列长度一致
+    )
+    
+    # 创建特征
+    for i, example_index in enumerate(all_example_indices):
+        source_ids = tokenized_prompts["input_ids"][i]
+        target_ids = tokenized_targets["input_ids"][i]
         
-        source_ids = tokenized_prompt["input_ids"]
-        target_ids = tokenized_target["input_ids"]
+        source_mask = tokenized_prompts["attention_mask"][i]
+        target_mask = tokenized_targets["attention_mask"][i]
         
-        source_mask = tokenized_prompt["attention_mask"]
-        target_mask = tokenized_target["attention_mask"]
-        
-        if example_index < 1:
+        if i < 1:
             if stage == 'train':
                 logger.info('*** Example ***')
-                logger.info('idx: {}'.format(example.idx))
-                logger.info('prompt: {}'.format(prompt))
-                logger.info('target: {}'.format(target))
+                logger.info('idx: {}'.format(examples[example_index].idx))
+                logger.info('prompt: {}'.format(all_prompts[i]))
+                logger.info('target: {}'.format(all_targets[i]))
                 logger.info('source_ids: {}'.format(' '.join(map(str, source_ids))))
                 logger.info('source_mask: {}'.format(' '.join(map(str, source_mask))))
                 logger.info('target_ids: {}'.format(' '.join(map(str, target_ids))))
@@ -191,7 +218,14 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
             )
         )
     
-    # 新增：返回提示信息和特征
+    # 验证所有特征长度一致
+    if features:
+        source_lengths = [len(f.source_ids) for f in features]
+        target_lengths = [len(f.target_ids) for f in features]
+        logger.info(f"Stage: {stage}, Source lengths: min={min(source_lengths)}, max={max(source_lengths)}")
+        logger.info(f"Stage: {stage}, Target lengths: min={min(target_lengths)}, max={max(target_lengths)}")
+    
+    # 返回提示信息和特征
     return features, prompts
 
 

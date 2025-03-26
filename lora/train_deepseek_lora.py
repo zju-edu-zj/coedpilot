@@ -227,6 +227,19 @@ def main():
         load_in_8bit = False
         load_in_4bit = False
     
+     # 添加一个专门用于处理和保存数据的选项
+    if args.save_processed_data and not (args.do_train or args.do_eval or args.do_test):
+        logger.info("Processing and saving all datasets...")
+        process_and_save_data(
+            args.train_filename, 
+            args.dev_filename, 
+            args.test_filename, 
+            tokenizer, 
+            args, 
+            args.processed_data_output_dir
+        )
+        logger.info("All datasets processed and saved.")
+        return
     # 加载模型
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
@@ -239,6 +252,7 @@ def main():
     
     # 为LoRA准备模型
     if load_in_8bit or load_in_4bit:
+        logger.info("prepare model for kbit training", load_in_8bit, load_in_4bit)
         model = prepare_model_for_kbit_training(model)
     
     # 配置LoRA
@@ -417,8 +431,17 @@ def main():
             test_features = load_features(os.path.join(args.processed_data_dir, 'test_features.pt'))
             test_examples = read_examples(args.test_filename)
         else:
-            logger.info("unexpected, please save processed data first")
-            exit()
+            # 直接处理测试数据
+            logger.info("处理测试数据...")
+            test_examples = read_examples(args.test_filename)
+            test_features = convert_examples_to_features(
+                examples=test_examples,
+                tokenizer=tokenizer,
+                max_source_length=args.max_source_length,
+                max_target_length=args.max_target_length,
+                stage='test'
+            )
+            logger.info(f"处理了 {len(test_features)} 条测试特征")
         
         # 加载最佳模型
         best_model_path = os.path.join(args.output_dir, 'checkpoint-best-bleu')
@@ -429,7 +452,8 @@ def main():
                 torch_dtype=compute_dtype,
                 device_map="auto"
             )
-        
+        else:
+            logger.info("找不到最佳模型，使用预训练模型")
         all_input_ids = torch.tensor([f.source_ids for f in test_features], dtype=torch.long)
         all_attention_mask = torch.tensor([f.source_mask for f in test_features], dtype=torch.long)
         test_data = TensorDataset(all_input_ids, all_attention_mask)
@@ -483,19 +507,6 @@ def main():
         best_predictions = [p[0] for p in predictions]  # 取第一个beam结果
         bleu_score = bleu.compute_bleu(references, best_predictions)
         logger.info(f"Test BLEU score: {bleu_score}")
-
-    # 添加一个专门用于处理和保存数据的选项
-    if args.save_processed_data and not (args.do_train or args.do_eval or args.do_test):
-        logger.info("Processing and saving all datasets...")
-        process_and_save_data(
-            args.train_filename, 
-            args.dev_filename, 
-            args.test_filename, 
-            tokenizer, 
-            args, 
-            args.processed_data_output_dir
-        )
-        logger.info("All datasets processed and saved.")
 
 
 if __name__ == '__main__':

@@ -34,10 +34,19 @@ mkdir -p $PROCESSED_DATA_DIR
 MODE=${1:-"train"}  # 默认为训练模式
 
 # 记录开始时间和命令
-echo "=====================================" | tee -a $LOG_FILE
-echo "开始时间: $(date)" | tee -a $LOG_FILE
-echo "运行模式: $MODE" | tee -a $LOG_FILE
-echo "=====================================" | tee -a $LOG_FILE
+echo "====================================="
+echo "开始时间: $(date)"
+echo "运行模式: $MODE"
+echo "====================================="
+
+# 设置PYTHONIOENCODING以确保正确处理Unicode
+export PYTHONIOENCODING=utf-8
+
+# 设置PYTHONUNBUFFERED以确保输出不被缓冲
+export PYTHONUNBUFFERED=1
+
+# 设置FORCE_COLOR环境变量，强制tqdm显示颜色
+export FORCE_COLOR=1
 
 case $MODE in
   "process_data")
@@ -51,7 +60,7 @@ case $MODE in
       --save_processed_data \
       --processed_data_output_dir $PROCESSED_DATA_DIR \
       --max_source_length $MAX_SOURCE_LENGTH \
-      --max_target_length $MAX_TARGET_LENGTH 2>&1 | tee -a $LOG_FILE
+      --max_target_length $MAX_TARGET_LENGTH
     ;;
     
   "train")
@@ -75,51 +84,13 @@ case $MODE in
       --use_8bit \
       --do_train \
       --do_eval \
-      --processed_data_dir $PROCESSED_DATA_DIR 2>&1 | tee -a $LOG_FILE
-    ;;
-    
-  "train_from_processed")
-    # 从处理好的数据训练
-    python train_deepseek_lora.py \
-      --model_name_or_path $MODEL_NAME \
-      --output_dir $OUTPUT_DIR \
-      --train_filename $TRAIN_FILE \
-      --dev_filename $DEV_FILE \
-      --max_source_length $MAX_SOURCE_LENGTH \
-      --max_target_length $MAX_TARGET_LENGTH \
-      --train_batch_size $BATCH_SIZE \
-      --eval_batch_size $BATCH_SIZE \
-      --gradient_accumulation_steps $GRAD_ACCUM_STEPS \
-      --learning_rate $LEARNING_RATE \
-      --num_train_epochs $NUM_EPOCHS \
-      --beam_size $BEAM_SIZE \
-      --lora_r $LORA_R \
-      --lora_alpha $LORA_ALPHA \
-      --lora_dropout $LORA_DROPOUT \
-      --use_8bit \
-      --do_train \
-      --do_eval \
-      --processed_data_dir $PROCESSED_DATA_DIR 2>&1 | tee -a $LOG_FILE
-    ;;
-    
-  "eval")
-    # 评估模式
-    python train_deepseek_lora.py \
-      --model_name_or_path $OUTPUT_DIR \
-      --output_dir $OUTPUT_DIR \
-      --dev_filename $DEV_FILE \
-      --max_source_length $MAX_SOURCE_LENGTH \
-      --max_target_length $MAX_TARGET_LENGTH \
-      --eval_batch_size $BATCH_SIZE \
-      --beam_size $BEAM_SIZE \
-      --do_eval \
-      --processed_data_dir $PROCESSED_DATA_DIR 2>&1 | tee -a $LOG_FILE
+      --processed_data_dir $PROCESSED_DATA_DIR
     ;;
     
   "test")
     # 测试模式
     python train_deepseek_lora.py \
-      --model_name_or_path $OUTPUT_DIR \
+      --model_name_or_path $MODEL_NAME \
       --output_dir $OUTPUT_DIR \
       --test_filename $TEST_FILE \
       --max_source_length $MAX_SOURCE_LENGTH \
@@ -127,7 +98,7 @@ case $MODE in
       --eval_batch_size $BATCH_SIZE \
       --beam_size $BEAM_SIZE \
       --do_test \
-      --processed_data_dir $PROCESSED_DATA_DIR 2>&1 | tee -a $LOG_FILE
+      --processed_data_dir $PROCESSED_DATA_DIR
     ;;
     
   "train_4bit")
@@ -151,17 +122,30 @@ case $MODE in
       --use_4bit \
       --do_train \
       --do_eval \
-      --processed_data_dir $PROCESSED_DATA_DIR 2>&1 | tee -a $LOG_FILE
+      --processed_data_dir $PROCESSED_DATA_DIR
+    ;;
+    
+  "direct_test")
+    # 直接测试模式，无需预处理数据
+    python train_deepseek_lora.py \
+      --model_name_or_path $MODEL_NAME \
+      --output_dir $OUTPUT_DIR \
+      --test_filename $TEST_FILE \
+      --max_source_length $MAX_SOURCE_LENGTH \
+      --max_target_length $MAX_TARGET_LENGTH \
+      --eval_batch_size $BATCH_SIZE \
+      --beam_size $BEAM_SIZE \
+      --do_test
     ;;
     
   *)
-    echo "未知的模式: $MODE" | tee -a $LOG_FILE
-    echo "可用模式: process_data, train, train_from_processed, eval, test, train_4bit" | tee -a $LOG_FILE
+    echo "未知的模式: $MODE"
+    echo "可用模式: process_data, train, test, train_4bit, direct_test"
     exit 1
     ;;
 esac
 
 # 记录结束时间
-echo "=====================================" | tee -a $LOG_FILE
-echo "结束时间: $(date)" | tee -a $LOG_FILE
-echo "=====================================" | tee -a $LOG_FILE 
+echo "====================================="
+echo "结束时间: $(date)"
+echo "=====================================" 
