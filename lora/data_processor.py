@@ -68,58 +68,86 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
         # 解析输入数据
         source_code = example.source
         
-        # 将</s>替换为tokenizer的eos_token
-        source_code = source_code.replace("</s>", tokenizer.eos_token)
+        # 分离上下文和先前编辑
+        parts = source_code.split("</s>")
+        context = parts[0]  # 第一个</s>之前的部分是上下文
         
         # 处理上下文中的<mask>标记
-        source_tokens = source_code.split()
+        context_lines = context.split('\n')
         label_idx = 0
-        processed_tokens = []
+        processed_lines = []
         
-        for token in source_tokens:
-            if token == "<mask>":
+        for line in context_lines:
+            if "<mask>" in line:
                 # 根据label_window中的操作类型替换<mask>
                 if label_idx < len(example.edit_ops):
                     op = example.edit_ops[label_idx]
                     if op == "add":
-                        # 保留特殊标记
-                        processed_tokens.append("<ADD_CODE>")
+                        # 标记为添加操作
+                        processed_line = line.replace("<mask>", "<ADD_CODE>")
                     elif op == "replace":
-                        # 保留特殊标记
-                        processed_tokens.append("<REPLACE_CODE>")
+                        # 标记为替换操作
+                        processed_line = line.replace("<mask>", "<REPLACE_CODE>")
                     else:  # keep或其他操作
                         # 将keep也设置为特殊标记
-                        processed_tokens.append("<KEEP_CODE>")
+                        processed_line = line.replace("<mask>", "<KEEP_CODE>")
                     label_idx += 1
                 else:
                     # 如果没有对应的操作，默认保持不变
-                    processed_tokens.append("<KEEP_CODE>")
+                    processed_line = line.replace("<mask>", "<KEEP_CODE>")
+                processed_lines.append(processed_line)
             else:
-                processed_tokens.append(token)
+                processed_lines.append(line)
         
-        processed_source = " ".join(processed_tokens)
-        logger.info(f"tokenizer.eos_token: {tokenizer.eos_token}, tokenizer.cls_token: {tokenizer.cls_token}, tokenizer.sep_token: {tokenizer.sep_token}, tokenizer.pad_token: {tokenizer.pad_token}")
-        # 对处理后的源代码进行tokenize
-        source_tokens = tokenizer.tokenize(processed_source)[:args.max_source_length - 2]
-        source_tokens = [tokenizer.cls_token] + source_tokens + [tokenizer.sep_token]
-        source_ids = tokenizer.convert_tokens_to_ids(source_tokens)
-        source_mask = [1] * len(source_ids)
-        padding_length = args.max_source_length - len(source_ids)
-        source_ids += [tokenizer.pad_token_id] * padding_length
-        source_mask += [0] * padding_length
+        processed_context = '\n'.join(processed_lines)
+        
+        # 处理先前的编辑，将开头的add和remove替换为特殊标记
+        processed_parts = [processed_context]  # 第一部分是处理后的上下文
+        
+        if len(parts) > 1:
+            for i in range(1, len(parts)):
+                part = parts[i]
+                # 检查是否以"add "开头
+                if part.lstrip().startswith("add "):
+                    processed_part = part.replace("add ", "<ADD> ", 1)  # 只替换第一次出现
+                # 检查是否以"remove "开头
+                elif part.lstrip().startswith("remove "):
+                    processed_part = part.replace("remove ", "<REMOVE> ", 1)  # 只替换第一次出现
+                else:
+                    processed_part = part
+                processed_parts.append(processed_part)
+        
+        # 将处理后的部分重新组合，使用tokenizer的eos_token替换</s>
+        processed_source = tokenizer.eos_token.join(processed_parts)
+        
+        # 使用tokenizer直接处理源代码和目标
+        source_inputs = tokenizer(
+            processed_source,
+            truncation=True,
+            max_length=args.max_source_length,
+            padding='max_length',
+            return_tensors=None  # 返回列表而不是张量
+        )
+        
+        source_ids = source_inputs["input_ids"]
+        source_mask = source_inputs["attention_mask"]
         
         # 处理目标
         if stage == 'test':
-            target_tokens = tokenizer.tokenize('None')
+            target_text = 'None'
         else:
-            target_tokens = tokenizer.tokenize(example.target)[:args.max_target_length - 2]
+            target_text = example.target
+            
+        target_inputs = tokenizer(
+            target_text,
+            truncation=True,
+            max_length=args.max_target_length,
+            padding='max_length',
+            return_tensors=None  # 返回列表而不是张量
+        )
         
-        target_tokens = [tokenizer.cls_token] + target_tokens + [tokenizer.sep_token]
-        target_ids = tokenizer.convert_tokens_to_ids(target_tokens)
-        target_mask = [1] * len(target_ids)
-        padding_length = args.max_target_length - len(target_ids)
-        target_ids += [tokenizer.pad_token_id] * padding_length
-        target_mask += [0] * padding_length
+        target_ids = target_inputs["input_ids"]
+        target_mask = target_inputs["attention_mask"]
         
         # 记录提示信息
         prompts.append({
@@ -132,10 +160,8 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
             if stage == 'train':
                 logger.info('*** Example ***')
                 logger.info('idx: {}'.format(example.idx))
-                logger.info('source_tokens: {}'.format([x for x in source_tokens]))
                 logger.info('source_ids: {}'.format(' '.join(map(str, source_ids))))
                 logger.info('source_mask: {}'.format(' '.join(map(str, source_mask))))
-                logger.info('target_tokens: {}'.format([x for x in target_tokens]))
                 logger.info('target_ids: {}'.format(' '.join(map(str, target_ids))))
                 logger.info('target_mask: {}'.format(' '.join(map(str, target_mask))))
         

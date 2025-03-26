@@ -8,8 +8,8 @@ PROCESSED_DATA_DIR="./processed_data"              # 处理后的数据目录
 LOG_FILE="output.txt"                              # 日志文件
 
 # 数据文件
-TRAIN_FILE="${DATA_DIR}/new_test.jsonl"
-DEV_FILE="${DATA_DIR}/test2.jsonl"
+TRAIN_FILE="${DATA_DIR}/cur_train.jsonl"
+DEV_FILE="${DATA_DIR}/cur_dev.jsonl"
 TEST_FILE="${DATA_DIR}/new_train.jsonl"
 
 # 训练参数

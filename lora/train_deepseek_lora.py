@@ -210,7 +210,13 @@ def main():
     # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
     special_tokens = {
-        "additional_special_tokens": ["<ADD_CODE>", "<REPLACE_CODE>", "<KEEP_CODE>"]
+        "additional_special_tokens": [
+            "<ADD_CODE>", 
+            "<REPLACE_CODE>", 
+            "<KEEP_CODE>",
+            "<ADD>", 
+            "<REMOVE>"
+        ]
     }
     num_added_tokens = tokenizer.add_special_tokens(special_tokens)
     logger.info(f"Added {num_added_tokens} new special tokens")
@@ -492,7 +498,11 @@ def main():
                     beam_results.append(gen_text)
                 predictions.append(beam_results)
         
-        # 保存测试结果
+        # 计算BLEU分数
+        references = [ex.target for ex in test_examples]
+        best_predictions = [p[0] for p in predictions]  # 取第一个beam结果
+        
+        # 保存测试结果到文件
         output_dict = {}
         for idx, (pred, ex) in enumerate(zip(predictions, test_examples)):
             output_dict[str(ex.idx)] = (pred, ex.target)
@@ -500,10 +510,12 @@ def main():
         with open(os.path.join(args.output_dir, 'test_pred_gold.json'), 'w') as f:
             json.dump(output_dict, f, indent=2)
         
-        # 计算BLEU分数
-        references = [ex.target for ex in test_examples]
-        best_predictions = [p[0] for p in predictions]  # 取第一个beam结果
-        bleu_score = bleu.compute_bleu(references, best_predictions)
+        # 使用bleu模块的computeMaps_multiple和bleuFromMaps方法计算BLEU分数
+        (goldMap, predictionMap) = bleu.computeMaps_multiple(
+            os.path.join(args.output_dir, 'test_pred_gold.json'),
+            args.beam_size
+        )
+        bleu_score = round(bleu.bleuFromMaps(goldMap, predictionMap)[0], 2)
         logger.info(f"Test BLEU score: {bleu_score}")
 
 
