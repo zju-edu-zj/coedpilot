@@ -192,6 +192,12 @@ def main():
         help='Directory to save processed features if --save_processed_data is set.',
     )
     
+    # New command line arguments
+    parser.add_argument('--fp16', action='store_true', help='Use mixed precision training')
+    parser.add_argument('--max_train_samples', type=int, default=None, help='Maximum number of training samples')
+    parser.add_argument('--eval_steps', type=int, default=1000, help='Evaluation steps')
+    parser.add_argument('--save_steps', type=int, default=1000, help='Save checkpoint steps')
+    
     args = parser.parse_args()
     logger.info(args)
 
@@ -258,7 +264,7 @@ def main():
     
     # 为LoRA准备模型
     if load_in_8bit or load_in_4bit:
-        logger.info("prepare model for kbit training", load_in_8bit, load_in_4bit)
+        logger.info(f"Preparing model for kbit training: 8bit={load_in_8bit}, 4bit={load_in_4bit}")
         model = prepare_model_for_kbit_training(model)
     
     # 配置LoRA
@@ -288,6 +294,13 @@ def main():
             logger.info("unexpected, please save processed data first")
             exit()
         
+        # 在数据加载部分添加数据采样
+        if args.max_train_samples is not None and len(train_features) > args.max_train_samples:
+            logger.info(f"Using {args.max_train_samples} samples out of {len(train_features)} training samples")
+            # 随机采样以保持数据分布
+            random.seed(42)
+            train_features = random.sample(train_features, args.max_train_samples)
+        
         all_input_ids = torch.tensor([f.source_ids for f in train_features], dtype=torch.long)
         all_attention_mask = torch.tensor([f.source_mask for f in train_features], dtype=torch.long)
         all_labels = torch.tensor([f.target_ids for f in train_features], dtype=torch.long)
@@ -313,6 +326,14 @@ def main():
             optimizer, num_warmup_steps=int(t_total * 0.1), num_training_steps=t_total
         )
         
+        # 修改训练循环以使用混合精度
+        if args.fp16:
+            from torch.cuda.amp import autocast, GradScaler
+            scaler = GradScaler()
+            logger.info("Using mixed precision training (FP16)")
+        else:
+            scaler = None
+        
         # 开始训练
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_features))
@@ -332,37 +353,73 @@ def main():
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, attention_mask, labels = batch
                 
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels,
-                )
+                # 检查输入和标签的形状
+                if input_ids.shape != labels.shape:
+                    labels = input_ids.clone()
                 
-                loss = outputs.loss
-                
-                if args.gradient_accumulation_steps > 1:
-                    loss = loss / args.gradient_accumulation_steps
-                
-                loss.backward()
-                epoch_loss += loss.item()
-                
-                if (step + 1) % args.gradient_accumulation_steps == 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-                    optimizer.step()
-                    scheduler.step()
-                    optimizer.zero_grad()
-                    global_step += 1
+                # 使用混合精度训练
+                if args.fp16:
+                    with autocast():
+                        outputs = model(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            labels=labels,
+                        )
+                        loss = outputs.loss
+                        
+                    if args.gradient_accumulation_steps > 1:
+                        loss = loss / args.gradient_accumulation_steps
+                        
+                    scaler.scale(loss).backward()
+                    epoch_loss += loss.item()
+                    
+                    if (step + 1) % args.gradient_accumulation_steps == 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                        scaler.step(optimizer)
+                        scaler.update()
+                        scheduler.step()
+                        optimizer.zero_grad()
+                        global_step += 1
+                else:
+                    # 原始训练代码
+                    outputs = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels,
+                    )
+                    loss = outputs.loss
+                    
+                    if args.gradient_accumulation_steps > 1:
+                        loss = loss / args.gradient_accumulation_steps
+                        
+                    loss.backward()
+                    epoch_loss += loss.item()
+                    
+                    if (step + 1) % args.gradient_accumulation_steps == 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                        optimizer.step()
+                        scheduler.step()
+                        optimizer.zero_grad()
+                        global_step += 1
                 
                 bar.set_postfix(loss=epoch_loss/(step+1))
             
             tr_loss += epoch_loss
             
-            # 保存每个epoch的模型
-            output_dir = os.path.join(args.output_dir, f'checkpoint-epoch-{epoch}')
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir)
-            model.save_pretrained(output_dir)
-            tokenizer.save_pretrained(output_dir)
+            # # 更频繁地评估和保存
+            # if args.do_eval and global_step % args.eval_steps == 0:
+            #     # 评估代码...
+                
+            if global_step % args.save_steps == 0:
+                # 保存检查点
+                model_to_save = model.module if hasattr(model, 'module') else model
+                output_dir = os.path.join(args.output_dir, f'checkpoint-{global_step}')
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                model_to_save.save_pretrained(output_dir)
+                tokenizer.save_pretrained(output_dir)
+                logger.info(f"Saved model checkpoint to {output_dir}")
             
             # 评估模型
             if args.do_eval:
@@ -390,6 +447,11 @@ def main():
                 model.eval()
                 predictions = []
                 
+                # 确保pad_token_id已设置
+                if model.config.pad_token_id is None:
+                    logger.info(f"Setting pad_token_id to eos_token_id: {tokenizer.eos_token_id}")
+                    model.config.pad_token_id = tokenizer.eos_token_id
+
                 for batch in tqdm(eval_dataloader, desc="Evaluating"):
                     batch = tuple(t.to(device) for t in batch)
                     input_ids, attention_mask = batch
@@ -403,6 +465,7 @@ def main():
                             num_return_sequences=1,
                             do_sample=False,
                             early_stopping=True,
+                            pad_token_id=model.config.pad_token_id,  # 明确设置pad_token_id
                         )
                     
                     for i, g_ids in enumerate(generated_ids):
@@ -426,7 +489,7 @@ def main():
                     1  # 因为eval只有一个预测，所以beam_size=1
                 )
                 bleu_score = round(bleu.bleuFromMaps(goldMap, predictionMap)[0], 2)
-                logger.info(f"BLEU score: {bleu_score}")
+                logger.info(f"Evaluate BLEU score at epoch {epoch}: {bleu_score}")
                 
                 # 保存最佳模型
                 if bleu_score > best_bleu:
@@ -486,6 +549,11 @@ def main():
         model.eval()
         predictions = []
         
+        # 确保pad_token_id已设置
+        if model.config.pad_token_id is None:
+            logger.info(f"Setting pad_token_id to eos_token_id: {tokenizer.eos_token_id}")
+            model.config.pad_token_id = tokenizer.eos_token_id
+
         for batch in tqdm(test_dataloader, desc="Testing"):
             batch = tuple(t.to(device) for t in batch)
             input_ids, attention_mask = batch
@@ -499,6 +567,7 @@ def main():
                     num_return_sequences=args.beam_size,
                     do_sample=False,
                     early_stopping=True,
+                    pad_token_id=model.config.pad_token_id,  # 明确设置pad_token_id
                 )
             
             for i, beam_outputs in enumerate(generated_ids.reshape(input_ids.shape[0], args.beam_size, -1)):

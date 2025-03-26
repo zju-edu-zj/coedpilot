@@ -17,8 +17,9 @@ BATCH_SIZE=4                  # 批次大小
 GRAD_ACCUM_STEPS=4            # 梯度累积步数
 LEARNING_RATE=2e-4            # 学习率
 NUM_EPOCHS=3                  # 训练轮数
-MAX_SOURCE_LENGTH=1024        # 最大源序列长度
-MAX_TARGET_LENGTH=256         # 最大目标序列长度
+MAX_LENGTH=1024               # 最大序列长度
+MAX_SOURCE_LENGTH=$MAX_LENGTH # 最大源序列长度
+MAX_TARGET_LENGTH=$MAX_LENGTH # 最大目标序列长度
 BEAM_SIZE=5                   # 束搜索大小
 
 # LoRA参数
