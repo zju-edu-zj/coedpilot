@@ -13,11 +13,12 @@ DEV_FILE="${DATA_DIR}/cur_dev.jsonl"
 TEST_FILE="${DATA_DIR}/new_train.jsonl"
 
 # 训练参数
-BATCH_SIZE=4                  # 批次大小
+BATCH_SIZE=64                  # 批次大小
+EVAL_BATCH_SIZE=16             # 评估批次大小
 GRAD_ACCUM_STEPS=4            # 梯度累积步数
 LEARNING_RATE=2e-4            # 学习率
 NUM_EPOCHS=3                  # 训练轮数
-MAX_LENGTH=1024               # 最大序列长度
+MAX_LENGTH=512               # 最大序列长度
 MAX_SOURCE_LENGTH=$MAX_LENGTH # 最大源序列长度
 MAX_TARGET_LENGTH=$MAX_LENGTH # 最大目标序列长度
 BEAM_SIZE=5                   # 束搜索大小
@@ -74,7 +75,7 @@ case $MODE in
       --max_source_length $MAX_SOURCE_LENGTH \
       --max_target_length $MAX_TARGET_LENGTH \
       --train_batch_size $BATCH_SIZE \
-      --eval_batch_size $BATCH_SIZE \
+      --eval_batch_size $EVAL_BATCH_SIZE \
       --gradient_accumulation_steps $GRAD_ACCUM_STEPS \
       --learning_rate $LEARNING_RATE \
       --num_train_epochs $NUM_EPOCHS \
@@ -85,6 +86,7 @@ case $MODE in
       --use_8bit \
       --do_train \
       --do_eval \
+      --max_train_samples 3000 \
       --processed_data_dir $PROCESSED_DATA_DIR
     ;;
     
@@ -96,7 +98,7 @@ case $MODE in
       --test_filename $TEST_FILE \
       --max_source_length $MAX_SOURCE_LENGTH \
       --max_target_length $MAX_TARGET_LENGTH \
-      --eval_batch_size $BATCH_SIZE \
+      --eval_batch_size $EVAL_BATCH_SIZE \
       --beam_size $BEAM_SIZE \
       --do_test \
       --processed_data_dir $PROCESSED_DATA_DIR
@@ -112,7 +114,7 @@ case $MODE in
       --max_source_length $MAX_SOURCE_LENGTH \
       --max_target_length $MAX_TARGET_LENGTH \
       --train_batch_size $BATCH_SIZE \
-      --eval_batch_size $BATCH_SIZE \
+      --eval_batch_size $EVAL_BATCH_SIZE \
       --gradient_accumulation_steps $GRAD_ACCUM_STEPS \
       --learning_rate $LEARNING_RATE \
       --num_train_epochs $NUM_EPOCHS \
@@ -134,7 +136,7 @@ case $MODE in
       --test_filename $TEST_FILE \
       --max_source_length $MAX_SOURCE_LENGTH \
       --max_target_length $MAX_TARGET_LENGTH \
-      --eval_batch_size $BATCH_SIZE \
+      --eval_batch_size $EVAL_BATCH_SIZE \
       --beam_size $BEAM_SIZE \
       --do_test
     ;;

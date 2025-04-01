@@ -215,6 +215,10 @@ def main():
 
     # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
+    # 设置左侧填充
+    logger.info(f"tokenizer padding side: {tokenizer.padding_side}")
+    tokenizer.padding_side = 'left'
+    logger.info(f"current tokenizer padding side: {tokenizer.padding_side}")
     special_tokens = {
         "additional_special_tokens": [
             "<ADD_CODE>", 
@@ -224,8 +228,9 @@ def main():
             "<REMOVE>"
         ]
     }
+    logger.info(f"len of tokenizer: {len(tokenizer)}, vocab size: {tokenizer.vocab_size}")
     num_added_tokens = tokenizer.add_special_tokens(special_tokens)
-    logger.info(f"Added {num_added_tokens} new special tokens")
+    logger.info(f"Added {num_added_tokens} new special tokens, current vocab size: {tokenizer.vocab_size}, current len of tokenizer: {len(tokenizer)}")
     
     # 设置量化参数
     compute_dtype = torch.float16
@@ -259,13 +264,14 @@ def main():
         torch_dtype=compute_dtype,
         load_in_8bit=load_in_8bit,
         load_in_4bit=load_in_4bit,
-        device_map="auto"
+        device_map="auto",
+        use_cache=False  # 禁用KV缓存以兼容梯度检查点
     )
     
     # 为LoRA准备模型
     if load_in_8bit or load_in_4bit:
         logger.info(f"Preparing model for kbit training: 8bit={load_in_8bit}, 4bit={load_in_4bit}")
-        model = prepare_model_for_kbit_training(model)
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     
     # 配置LoRA
     peft_config = LoraConfig(
@@ -282,7 +288,21 @@ def main():
     model.print_trainable_parameters()  # 打印可训练参数比例
     
     # 调整嵌入大小以适应新添加的特殊标记
-    model.resize_token_embeddings(len(tokenizer))
+    # 打印模型的embedding层大小和tokenizer大小
+    logger.info(f"模型embedding层大小: {model.get_input_embeddings().weight.shape}")
+    logger.info(f"tokenizer词表大小: {len(tokenizer)}")
+    
+    # 修正：确保嵌入层大小不会被缩小，只会扩大
+    if len(tokenizer) > model.get_input_embeddings().weight.shape[0]:
+        # 只有当tokenizer大于模型嵌入层时才调整大小
+        model.resize_token_embeddings(len(tokenizer))
+    else:
+        # 如果tokenizer小于模型嵌入层，则将tokenizer扩展到模型嵌入层大小
+        logger.info(f"分词器大小小于模型嵌入层大小，保持模型嵌入层不变")
+        # 可能需要确保tokenizer能够处理所有模型支持的token
+    
+    # 调整后再次打印embedding层大小
+    logger.info(f"调整后的embedding层大小: {model.get_input_embeddings().weight.shape}")
     
     if args.do_train:
         if args.processed_data_dir:
@@ -355,7 +375,8 @@ def main():
                 
                 # 检查输入和标签的形状
                 if input_ids.shape != labels.shape:
-                    labels = input_ids.clone()
+                    logger.warning(f"Input IDs shape: {input_ids.shape}, Labels shape: {labels.shape}")
+                    raise ValueError("输入和标签形状不匹配，请检查数据处理流程")
                 
                 # 使用混合精度训练
                 if args.fp16:
@@ -521,6 +542,8 @@ def main():
             # 直接处理测试数据
             logger.info("处理测试数据...")
             test_examples = read_examples(args.test_filename)
+            # 确保tokenizer使用左侧填充
+            tokenizer.padding_side = 'left'
             test_features, prompts = convert_examples_to_features(
                 examples=test_examples,
                 tokenizer=tokenizer,
@@ -531,14 +554,21 @@ def main():
         # 加载最佳模型
         best_model_path = os.path.join(args.output_dir, 'checkpoint-best-bleu')
         if os.path.exists(best_model_path):
+            # 修改这里：确保使用与训练时相同的tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(best_model_path, trust_remote_code=True)
+            logger.info(f"len of tokenizer: {len(tokenizer)}, vocab size: {tokenizer.vocab_size}")
+            # 加载模型时确保使用正确的配置
             model = AutoModelForCausalLM.from_pretrained(
                 best_model_path,
                 trust_remote_code=True,
                 torch_dtype=compute_dtype,
-                device_map="auto"
+                device_map="auto",
+                use_cache=True  # 在推理时启用KV缓存以加速生成
             )
         else:
             logger.info("找不到最佳模型，使用预训练模型")
+            # 确保在推理时启用缓存
+            model.config.use_cache = True
         all_input_ids = torch.tensor([f.source_ids for f in test_features], dtype=torch.long)
         all_attention_mask = torch.tensor([f.source_mask for f in test_features], dtype=torch.long)
         test_data = TensorDataset(all_input_ids, all_attention_mask)

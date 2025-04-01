@@ -11,6 +11,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+IGNORE_INDEX = -100
+EOT_TOKEN = "<|EOT|>"
 
 class Example(object):
     """A single training/test example."""
@@ -61,6 +63,10 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
     """Convert examples to features that can be used for model training."""
     features = []
     prompts = []  # 用于存储所有提示
+    
+    # 确保tokenizer使用右侧填充，与DeepSeek模型一致
+    logger.info(f"tokenizer padding side: {tokenizer.padding_side}")
+    tokenizer.padding_side = 'right'
     
     for example_index, example in enumerate(
         tqdm(examples, desc='convert examples to features')
@@ -120,51 +126,95 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
         # 将处理后的部分重新组合，使用tokenizer的eos_token替换</s>
         processed_source = tokenizer.eos_token.join(processed_parts)
         
-        # 使用tokenizer直接处理源代码和目标
-        source_inputs = tokenizer(
-            processed_source,
-            truncation=True,
-            max_length=args.max_source_length,
-            padding='max_length',
-            return_tensors=None  # 返回列表而不是张量
-        )
+        source_text = processed_source
         
-        source_ids = source_inputs["input_ids"]
-        source_mask = source_inputs["attention_mask"]
+        # 目标文本添加EOT_TOKEN
+        target_text = f"{example.target}\n{EOT_TOKEN}"
         
-        # 处理目标
-        if stage == 'test':
-            target_text = 'None'
-        else:
-            target_text = example.target
+        if stage == 'train':
+            # 使用与finetune_deepseek.py中相同的预处理逻辑
+            # 1. 将source和target组合
+            examples_text = source_text + target_text
             
-        target_inputs = tokenizer(
-            target_text,
-            truncation=True,
-            max_length=args.max_target_length,
-            padding='max_length',
-            return_tensors=None  # 返回列表而不是张量
-        )
+            # 2. 分别tokenize组合文本和源文本
+            source_tokens = tokenizer.encode(
+                source_text,
+                add_special_tokens=True,
+                truncation=True,
+                max_length=args.max_source_length,
+            )
+            
+            combined_tokens = tokenizer.encode(
+                examples_text,
+                add_special_tokens=True,
+                truncation=True,
+                max_length=args.max_source_length + args.max_target_length,
+            )
+            
+            # 3. 创建标签，将源文本部分设置为IGNORE_INDEX
+            source_len = len(source_tokens)
+            labels = [-100] * source_len + combined_tokens[source_len:]
+            
+            # 确保长度一致
+            if len(labels) < len(combined_tokens):
+                logger.info(f"labels长度小于combined_tokens，进行填充")
+                labels = labels + [-100] * (len(combined_tokens) - len(labels))
+            elif len(labels) > len(combined_tokens):
+                logger.info(f"labels长度大于combined_tokens，进行截断")
+                labels = labels[:len(combined_tokens)]
+            
+            # 4. 创建attention mask
+            attention_mask = [1] * len(combined_tokens)
+            
+            # 5. 进行填充处理
+            padding_length = args.max_source_length + args.max_target_length - len(combined_tokens)
+            if padding_length > 0:
+                combined_tokens = combined_tokens + [tokenizer.pad_token_id] * padding_length
+                labels = labels + [-100] * padding_length
+                attention_mask = attention_mask + [0] * padding_length
+            
+            # 使用处理后的序列
+            source_ids = combined_tokens
+            source_mask = attention_mask
+            target_ids = labels
+            target_mask = attention_mask
+        else:
+            # 验证和测试阶段只需要处理输入
+            source_inputs = tokenizer(
+                source_text,
+                truncation=True,
+                max_length=args.max_source_length,
+                padding='max_length',
+                return_tensors=None
+            )
+            
+            source_ids = source_inputs["input_ids"]
+            source_mask = source_inputs["attention_mask"]
+            
+            # 为了保持一致性，仍然创建target_ids和target_mask
+            target_inputs = tokenizer(
+                target_text,
+                truncation=True,
+                max_length=args.max_target_length,
+                padding='max_length',
+                return_tensors=None
+            )
+            
+            target_ids = target_inputs["input_ids"]
+            target_mask = target_inputs["attention_mask"]
         
-        target_ids = target_inputs["input_ids"]
-        target_mask = target_inputs["attention_mask"]
-        
-        # 记录提示信息
-        prompts.append({
-            "example_index": example_index,
-            "source": processed_source,
-            "target": example.target
-        })
-        
+        # 记录示例信息
         if example_index < 1:
-            if stage == 'train':
-                logger.info('*** Example ***')
-                logger.info('idx: {}'.format(example.idx))
-                logger.info('source_ids: {}'.format(' '.join(map(str, source_ids))))
-                logger.info('source_mask: {}'.format(' '.join(map(str, source_mask))))
-                logger.info('target_ids: {}'.format(' '.join(map(str, target_ids))))
-                logger.info('target_mask: {}'.format(' '.join(map(str, target_mask))))
+            logger.info('*** Example ***')
+            logger.info('idx: {}'.format(example.idx))
+            logger.info('source_text: {}'.format(source_text))
+            logger.info('target_text: {}'.format(target_text))
+            logger.info('source_ids: {}'.format(' '.join(map(str, source_ids))))
+            logger.info('source_mask: {}'.format(' '.join(map(str, source_mask))))
+            logger.info('target_ids: {}'.format(' '.join(map(str, target_ids))))
+            logger.info('target_mask: {}'.format(' '.join(map(str, target_mask))))
         
+        # 添加到features列表
         features.append(
             InputFeatures(
                 example_index=example_index,
@@ -174,6 +224,13 @@ def convert_examples_to_features(examples, tokenizer, args, stage=None):
                 target_mask=target_mask,
             )
         )
+        
+        # 记录提示信息
+        prompts.append({
+            "example_index": example_index,
+            "source": source_text,
+            "target": target_text
+        })
     
     return features, prompts
 
@@ -248,6 +305,15 @@ def process_and_save_data(train_file, dev_file, test_file, tokenizer, args, outp
         test_features, test_prompts = prepare_test_features(test_examples, tokenizer, args)
         save_features(test_features, os.path.join(output_dir, 'test_features.pt'))
         save_prompts(test_prompts, os.path.join(output_dir, 'test_prompts.json'))
+
+# 添加build_instruction_prompt函数，与finetune_deepseek.py中保持一致
+def build_instruction_prompt(instruction: str):
+    return '''
+You are an AI programming assistant, utilizing the DeepSeek Coder model, developed by DeepSeek Company, and you only answer questions related to computer science. For politically sensitive questions, security and privacy issues, and other non-computer science questions, you will refuse to answer.
+### Instruction:
+{}
+### Response:
+'''.format(instruction.strip()).lstrip()
 
 if __name__ == "__main__":
     examples = read_examples("new_test.jsonl")
