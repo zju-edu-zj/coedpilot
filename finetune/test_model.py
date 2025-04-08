@@ -5,6 +5,7 @@ from peft import PeftModel
 import json
 import os
 from tqdm import tqdm
+import bleu  # 添加bleu模块导入
 
 def process_source(example):
     """处理源代码，先替换<mask>标签，然后处理编辑操作"""
@@ -97,28 +98,50 @@ You are a professional code editing assistant. You are a professional code editi
 ### Response:
 '''.format(instruction.strip()).lstrip()
 
-def generate_response(model, tokenizer, prompt, max_new_tokens=512, temperature=0.2):
-    """使用模型生成响应"""
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+def batch_generate_responses(model, tokenizer, prompts, max_new_tokens=512, temperature=0.2, batch_size=4, beam_size=1):
+    """批量生成响应"""
+    all_responses = []
     
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            do_sample=True,
-            pad_token_id=tokenizer.pad_token_id
-        )
+    # 确保pad_token_id已设置
+    if model.config.pad_token_id is None:
+        model.config.pad_token_id = tokenizer.eos_token_id
     
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    # 提取响应部分（去除提示部分）
-    response = response[len(prompt):].strip()
+    # 分批处理
+    for i in range(0, len(prompts), batch_size):
+        batch_prompts = prompts[i:i+batch_size]
+        inputs = tokenizer(batch_prompts, padding=True, return_tensors="pt").to(model.device)
+        
+        with torch.no_grad():
+            generated_ids = model.generate(
+                input_ids=inputs.input_ids,
+                attention_mask=inputs.attention_mask,
+                max_new_tokens=max_new_tokens,
+                num_beams=beam_size,
+                num_return_sequences=beam_size,
+                do_sample=(temperature > 0),
+                temperature=temperature,
+                pad_token_id=model.config.pad_token_id,
+                early_stopping=True,
+                repetition_penalty=1.0,
+                length_penalty=1.0,
+                no_repeat_ngram_size=0,
+            )
+        
+        # 重塑输出以获取每个输入的beam_size个结果
+        generated_ids = generated_ids.reshape(len(batch_prompts), beam_size, -1)
+        
+        for i, beam_outputs in enumerate(generated_ids):
+            beam_results = []
+            input_length = len(inputs.input_ids[i])
+            for beam_output in beam_outputs:
+                gen_text = tokenizer.decode(beam_output[input_length:], skip_special_tokens=True)
+                # 如果响应包含EOT标记，则截断
+                if "<|EOT|>" in gen_text:
+                    gen_text = gen_text.split("<|EOT|>")[0].strip()
+                beam_results.append(gen_text)
+            all_responses.append(beam_results)
     
-    # 如果响应包含EOT标记，则截断
-    if "<|EOT|>" in response:
-        response = response.split("<|EOT|>")[0].strip()
-    
-    return response
+    return all_responses
 
 def main():
     parser = argparse.ArgumentParser(description="测试微调后的模型")
@@ -126,9 +149,12 @@ def main():
     parser.add_argument("--lora_model", type=str, required=True, help="LoRA模型路径")
     parser.add_argument("--test_data", type=str, required=True, help="测试数据路径")
     parser.add_argument("--output_file", type=str, default="test_results.json", help="输出结果文件")
+    parser.add_argument("--bleu_output", type=str, default="test_pred_gold.json", help="BLEU评估输出文件")
     parser.add_argument("--max_samples", type=int, default=None, help="最大测试样本数")
     parser.add_argument("--temperature", type=float, default=0.2, help="生成温度")
     parser.add_argument("--max_new_tokens", type=int, default=512, help="最大生成token数")
+    parser.add_argument("--batch_size", type=int, default=4, help="批处理大小")
+    parser.add_argument("--beam_size", type=int, default=5, help="束搜索大小")
     args = parser.parse_args()
     
     # 加载模型和分词器
@@ -138,7 +164,8 @@ def main():
         args.base_model,
         torch_dtype=torch.bfloat16,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        use_cache=True  # 启用KV缓存以加速生成
     )
     
     # 加载LoRA权重
@@ -163,35 +190,65 @@ def main():
         os.makedirs(output_dir)
     
     # 进行测试
-    results = []
+    prompts = []
+    expected_codes = []
     print(f"开始测试 {len(test_data)} 个样本...")
     
-    for i, example in enumerate(tqdm(test_data)):
+    for example in test_data:
         # 构建提示
         instruction = process_source(example)
         prompt = build_instruction_prompt(instruction)
-        
-        # 生成响应
-        generated_code = generate_response(
-            model, 
-            tokenizer, 
-            prompt, 
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature
-        )
-        
-        # 保存结果
+        prompts.append(prompt)
+        expected_codes.append(example.get("docstring_tokens", ""))
+    
+    # 批量生成响应
+    generated_responses = batch_generate_responses(
+        model, 
+        tokenizer, 
+        prompts, 
+        max_new_tokens=args.max_new_tokens,
+        temperature=args.temperature,
+        batch_size=args.batch_size,
+        beam_size=args.beam_size
+    )
+    
+    # 保存结果
+    results = []
+    bleu_output_dict = {}
+    
+    for i, (prompt, responses, expected) in enumerate(zip(prompts, generated_responses, expected_codes)):
         result = {
             "id": i,
             "prompt": prompt,
-            "generated_code": generated_code,
-            "expected_code": example.get("docstring_tokens", ""),
+            "generated_code": responses[0],  # 取第一个beam结果作为主要结果
+            "all_generated": responses,      # 保存所有beam结果
+            "expected_code": expected,
         }
         results.append(result)
+        
+        # 为BLEU评估准备数据
+        bleu_output_dict[str(i)] = (responses, expected)
     
-    # 保存结果
+    # 保存详细结果
     with open(args.output_file, 'w', encoding='utf-8') as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
+    
+    # 保存BLEU评估数据
+    bleu_output_path = os.path.join(os.path.dirname(args.output_file), args.bleu_output)
+    with open(bleu_output_path, 'w', encoding='utf-8') as f:
+        json.dump(bleu_output_dict, f, ensure_ascii=False, indent=2)
+    
+    # 计算BLEU分数
+    try:
+        (goldMap, predictionMap) = bleu.computeMaps_multiple(bleu_output_path, args.beam_size)
+        bleu_score = round(bleu.bleuFromMaps(goldMap, predictionMap)[0], 2)
+        print(f"BLEU分数: {bleu_score}")
+        
+        # 将BLEU分数添加到结果文件中
+        with open(os.path.join(os.path.dirname(args.output_file), "bleu_score.txt"), 'w') as f:
+            f.write(f"BLEU分数: {bleu_score}\n")
+    except Exception as e:
+        print(f"计算BLEU分数时出错: {e}")
     
     print(f"测试完成，结果已保存到 {args.output_file}")
 

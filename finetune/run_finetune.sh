@@ -31,42 +31,26 @@ WARMUP_RATIO=0.03
 # 创建输出目录
 mkdir -p $OUTPUT_DIR
 
-# 操作模式：train, test, 或 both
-MODE=${1:-both}
-
-# 运行训练和/或测试脚本
-if [ "$MODE" == "train" ] || [ "$MODE" == "both" ]; then
-    python finetune_deepseek.py \
-        --model_name_or_path $MODEL_NAME \
-        --data_path $DATA_PATH \
-        --output_dir $OUTPUT_DIR \
-        --use_lora True \
-        --lora_r $LORA_R \
-        --lora_alpha $LORA_ALPHA \
-        --lora_dropout $LORA_DROPOUT \
-        --target_modules $TARGET_MODULES \
-        --num_train_epochs $EPOCHS \
-        --per_device_train_batch_size $BATCH_SIZE \
-        --gradient_accumulation_steps $GRAD_ACCUM \
-        --learning_rate $LR \
-        --warmup_ratio $WARMUP_RATIO \
-        --logging_steps 10 \
-        --save_steps 500 \
-        --save_total_limit 3 \
-        --model_max_length $MAX_LENGTH \
-        --fp16 True \
-        --report_to "tensorboard" \
-        --ddp_find_unused_parameters False
-fi
-
-if [ "$MODE" == "test" ] || [ "$MODE" == "both" ]; then
-    python finetune_deepseek.py \
-        --model_name_or_path $MODEL_NAME \
-        --test_data_path $TEST_DATA_PATH \
-        --output_dir $OUTPUT_DIR \
-        --do_eval True \
-        --model_max_length $MAX_LENGTH \
-        --fp16 True
-fi
+python finetune_deepseek.py \
+    --model_name_or_path $MODEL_NAME \
+    --data_path $DATA_PATH \
+    --output_dir $OUTPUT_DIR \
+    --use_lora True \
+    --lora_r $LORA_R \
+    --lora_alpha $LORA_ALPHA \
+    --lora_dropout $LORA_DROPOUT \
+    --target_modules $TARGET_MODULES \
+    --num_train_epochs $EPOCHS \
+    --per_device_train_batch_size $BATCH_SIZE \
+    --gradient_accumulation_steps $GRAD_ACCUM \
+    --learning_rate $LR \
+    --warmup_ratio $WARMUP_RATIO \
+    --logging_steps 10 \
+    --save_steps 500 \
+    --save_total_limit 3 \
+    --model_max_length $MAX_LENGTH \
+    --fp16 True \
+    --report_to "tensorboard" \
+    --ddp_find_unused_parameters False
 
 echo "操作完成！模型保存在 $OUTPUT_DIR"

@@ -9,6 +9,9 @@ import transformers
 from transformers import Trainer, TrainingArguments, TrainerCallback
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType
+import json
+import pandas as pd
+from datasets import Dataset
 
 
 IGNORE_INDEX = -100
@@ -121,7 +124,6 @@ class ModelArguments:
 @dataclass
 class DataArguments:
     data_path: str = field(default=None, metadata={"help": "Path to the training data."})
-    test_data_path: str = field(default=None, metadata={"help": "Path to the test data."})
 
 
 @dataclass
@@ -133,7 +135,6 @@ class TrainingArguments(transformers.TrainingArguments):
         metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
     )
     do_train: bool = field(default=True, metadata={"help": "Whether to perform training."})
-    do_eval: bool = field(default=True, metadata={"help": "Whether to perform evaluation."})
 
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
     """Collects the state dict and dump to disk."""
@@ -235,7 +236,22 @@ class ProgressCallback(TrainerCallback):
             print(f"训练进度: {progress:.2f}% ({state.global_step}/{state.max_steps}) - Loss: {loss:.4f}")
             self.last_log = state.global_step
 
-def train_or_test():
+def load_jsonl_file(file_path):
+    """手动加载JSONL文件并返回Dataset对象"""
+    data = []
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            try:
+                data.append(json.loads(line.strip()))
+            except json.JSONDecodeError as e:
+                print(f"警告：跳过无效的JSON行: {e}")
+                continue
+    
+    # 转换为pandas DataFrame，然后转换为Dataset
+    df = pd.DataFrame(data)
+    return Dataset.from_pandas(df)
+
+def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     
@@ -286,62 +302,29 @@ def train_or_test():
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()  # 打印可训练参数比例
 
-    if training_args.do_train:
-        # 加载训练数据集 (JSONL格式)
-        raw_train_datasets = load_dataset(
-            'json',
-            data_files=data_args.data_path,
-            split="train",
-            cache_dir=training_args.cache_dir
-        )
-        if training_args.local_rank > 0: 
-            torch.distributed.barrier()
-        
-        train_dataset = raw_train_datasets.map(
-            train_tokenize_function,
-            batched=True,
-            batch_size=3000,
-            num_proc=32,
-            remove_columns=raw_train_datasets.column_names,
-            load_from_cache_file=True,
-            desc="Running Encoding",
-            fn_kwargs={"tokenizer": tokenizer}
-        )
-
-        if training_args.local_rank == 0:
-            torch.distributed.barrier()
-        
-        if training_args.local_rank == 0:
-            print("Training dataset samples:", len(train_dataset))
-            for index in random.sample(range(len(train_dataset)), 3):
-                print(f"Sample {index} of the training set: {train_dataset[index]['input_ids']}, {train_dataset[index]['labels']}.")
-                print(f"Sample {index} of the training set: {tokenizer.decode(list(train_dataset[index]['input_ids']))}.")
-    else:
-        train_dataset = None
-
-    if training_args.do_eval:
-        # 加载测试数据集 (JSONL格式)
-        raw_test_datasets = load_dataset(
-            'json',
-            data_files=data_args.test_data_path,
-            split="train",  # 使用train分割，因为jsonl文件没有预定义的分割
-            cache_dir=training_args.cache_dir
-        )
-        test_dataset = raw_test_datasets.map(
-            train_tokenize_function,
-            batched=True,
-            batch_size=3000,
-            num_proc=32,
-            remove_columns=raw_test_datasets.column_names,
-            load_from_cache_file=True,
-            desc="Running Encoding for Test",
-            fn_kwargs={"tokenizer": tokenizer}
-        )
-    else:
-        test_dataset = None
+    # 手动加载训练数据集
+    print(f"正在加载训练数据: {data_args.data_path}")
+    raw_train_datasets = load_jsonl_file(data_args.data_path)
+    
+    train_dataset = raw_train_datasets.map(
+        train_tokenize_function,
+        batched=True,
+        batch_size=3000,
+        num_proc=32,
+        remove_columns=raw_train_datasets.column_names,
+        load_from_cache_file=True,
+        desc="Running Encoding",
+        fn_kwargs={"tokenizer": tokenizer}
+    )
+    
+    if training_args.local_rank == 0:
+        print("训练数据集样本数:", len(train_dataset))
+        for index in random.sample(range(len(train_dataset)), min(3, len(train_dataset))):
+            print(f"训练集样本 {index}: {train_dataset[index]['input_ids']}, {train_dataset[index]['labels']}.")
+            print(f"训练集样本 {index} 解码: {tokenizer.decode(list(train_dataset[index]['input_ids']))}.")
 
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
-    data_module = dict(train_dataset=train_dataset, eval_dataset=test_dataset, data_collator=data_collator)
+    data_module = dict(train_dataset=train_dataset, data_collator=data_collator)
 
     # 创建进度回调函数
     progress_callback = ProgressCallback()
@@ -354,15 +337,9 @@ def train_or_test():
         **data_module
     )
 
-    if training_args.do_train:
-        trainer.train()
-        trainer.save_state()
-        safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
-
-    if training_args.do_eval:
-        eval_results = trainer.evaluate()
-        print(f"评估结果: {eval_results}")
-
+    trainer.train()
+    trainer.save_state()
+    safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
 
 if __name__ == "__main__":
-    train_or_test()
+    train()
