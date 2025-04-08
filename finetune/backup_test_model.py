@@ -58,11 +58,10 @@ def process_source(example):
         commit_message = commit_message.split("\n")[0]
     
     # 历史编辑操作作为一个集合处理
-    edit_history = []
+    edit_history = set()
     if len(parts) > 2:
         for edit in parts[2:]:
-            if edit.strip():  # 只添加非空编辑
-                edit_history.append(edit.strip())
+            edit_history.add(edit)
     
     # 构建prompt
     operations = []
@@ -71,26 +70,23 @@ def process_source(example):
     if replace_positions:
         operations.append(f"Replace code at line(s): {', '.join(map(str, replace_positions))}")
     
-    prompt = f"""Generate raw code based on the following information:
-
-Code Context:
----
+    prompt = f"""
+### Constraints
+1. Always respond with ONLY the python code block required
+2. Never include explanations, comments, or markdown formatting
+3. Make minimal changes to satisfy the request
+### Code Context:
 {chr(10).join(context_lines)}
----
-
-Required Operations:
+### Required Operations:
 {chr(10).join(operations)}
-
-Description:
+### Description:
 {commit_message}
-
-Related Historical Edits:
+### Related Historical Edits:
 """
-    
     # 为每个历史编辑添加编号，使用简单的分隔符
     if edit_history:
         for i, edit in enumerate(edit_history, 1):
-            prompt += f"\n[Edit {i}]\n{edit}\n---\n"
+            prompt += f"\n[Edit {i}]\n{edit}\n"
     else:
         prompt += "None"
     
@@ -98,11 +94,8 @@ Related Historical Edits:
 
 def build_instruction_prompt(instruction: str):
     return '''
-You are a code editing assistant. You can only output the raw code without any markers, markdown formatting or explanations in your response.
-
-### Instruction:
+You are a professional code editing assistant that outputs the python code snippet to be inserted.
 {}
-
 ### Response:
 '''.format(instruction.strip()).lstrip()
 
@@ -206,19 +199,12 @@ def main():
     print(f"开始测试 {len(test_data)} 个样本...")
     
     print("处理测试样本...")
-    for i, example in enumerate(tqdm(test_data, desc="准备提示")):
+    for example in tqdm(test_data, desc="准备提示"):
         # 构建提示
         instruction = process_source(example)
         prompt = build_instruction_prompt(instruction)
         prompts.append(prompt)
         expected_codes.append(example.get("docstring_tokens", ""))
-        
-        # 输出前几个示例
-        if i < 3:  # 只输出前3个示例
-            print(f"\n示例 #{i+1}:")
-            print("="*50)
-            print(prompt)
-            print("="*50)
     
     print(f"共准备了 {len(prompts)} 个提示，开始生成...")
     # 批量生成响应

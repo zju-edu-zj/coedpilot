@@ -30,7 +30,7 @@ mkdir -p $OUTPUT_DIR
 # 运行测试脚本
 python test_model.py \
     --base_model $BASE_MODEL \
-    # --lora_model $LORA_MODEL \
+    --lora_model $LORA_MODEL \
     --test_data $TEST_DATA \
     --output_file $OUTPUT_FILE \
     --bleu_output $BLEU_OUTPUT \
@@ -38,7 +38,8 @@ python test_model.py \
     --temperature $TEMPERATURE \
     --max_new_tokens $MAX_NEW_TOKENS \
     --batch_size $BATCH_SIZE \
-    --beam_size $BEAM_SIZE
+    --beam_size $BEAM_SIZE \
+    --pure_test True
 
 echo "测试完成！结果保存在 $OUTPUT_FILE"
 echo "BLEU评估结果保存在 ${OUTPUT_DIR}/${BLEU_OUTPUT}" 

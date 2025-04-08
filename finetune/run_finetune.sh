@@ -31,6 +31,12 @@ WARMUP_RATIO=0.03
 # 创建输出目录
 mkdir -p $OUTPUT_DIR
 
+# 创建日志目录
+LOG_DIR="./logs"
+mkdir -p $LOG_DIR
+LOG_FILE="${LOG_DIR}/train_$(date +%Y%m%d_%H%M%S).log"
+
+# 使用tee命令将输出同时显示在终端和写入到日志文件
 python finetune_deepseek.py \
     --model_name_or_path $MODEL_NAME \
     --data_path $DATA_PATH \
@@ -51,6 +57,7 @@ python finetune_deepseek.py \
     --model_max_length $MAX_LENGTH \
     --fp16 True \
     --report_to "tensorboard" \
-    --ddp_find_unused_parameters False
+    --ddp_find_unused_parameters False 2>&1 | tee $LOG_FILE
 
 echo "操作完成！模型保存在 $OUTPUT_DIR"
+echo "训练日志保存在 $LOG_FILE"

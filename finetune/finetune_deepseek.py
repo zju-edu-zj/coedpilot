@@ -48,19 +48,19 @@ def process_source(example):
             continue
         if line.startswith('add '):
             # 记录需要插入代码的位置和上下文
-            add_positions.append(i)
+            add_positions.append(i+1)
             remaining = line[4:]
-            context_lines.append(remaining)
+            context_lines.append(f"{i+1}: {remaining}")
             
         elif line.startswith('replace '):
             # 记录需要替换的位置和上下文
-            replace_positions.append(i)
+            replace_positions.append(i+1)
             remaining = line[8:]
-            context_lines.append(remaining)
+            context_lines.append(f"{i+1}: {remaining}")
         elif line.startswith('keep '):
             # 保留上下文信息
             remaining = line[5:]
-            context_lines.append(remaining)
+            context_lines.append(f"{i+1}: {remaining}")
     
     # 提取commit message和历史编辑
     commit_message = parts[1].strip() if len(parts) > 1 else ""
@@ -77,34 +77,35 @@ def process_source(example):
     # 构建prompt
     operations = []
     if add_positions:
-        operations.append(f"Add code at line(s): {', '.join(map(str, add_positions))}")
+        operations.append(f"Add code after line(s): {', '.join(map(str, add_positions))}")
     if replace_positions:
         operations.append(f"Replace code at line(s): {', '.join(map(str, replace_positions))}")
     
-    prompt = f"""Generate code based on the following information:
-
-Code Context:
-{'-' * 40}
+    prompt = f"""
+### Constraints
+1. Always respond with ONLY the python code block required
+2. Never include explanations, comments, or markdown formatting
+3. Make minimal changes to satisfy the request
+### Code Context:
 {chr(10).join(context_lines)}
-{'-' * 40}
-
-Required Operations:
+### Required Operations:
 {chr(10).join(operations)}
-
-Description:
+### Description:
 {commit_message}
-
-Related Historical Edits:
-{chr(10).join(f"• {edit}" for edit in edit_history) if edit_history else 'None'}
-
+### Related Historical Edits:
 """
+    # 为每个历史编辑添加编号，使用简单的分隔符
+    if edit_history:
+        for i, edit in enumerate(edit_history, 1):
+            prompt += f"\n[Edit {i}]\n{edit}\n"
+    else:
+        prompt += "None"
     
     return prompt
 
 def build_instruction_prompt(instruction: str):
     return '''
-You are a professional code editing assistant. Please generate only the code snippet to be inserted based on the provided information without any explanations or additional text.
-### Instruction:
+You are a professional code editing assistant that outputs the python code snippet to be inserted.
 {}
 ### Response:
 '''.format(instruction.strip()).lstrip()
@@ -217,7 +218,8 @@ def train_tokenize_function(examples, tokenizer):
         instruction = process_source(example)
         sources.append(build_instruction_prompt(instruction))
     
-    targets = [f"{output}\n{EOT_TOKEN}" for output in examples['docstring_tokens']]
+    # 将目标代码用Python代码块包裹起来
+    targets = [f"```python\n{output}\n```\n{EOT_TOKEN}" for output in examples['docstring_tokens']]
     data_dict = preprocess(sources, targets, tokenizer)
     return data_dict
 
