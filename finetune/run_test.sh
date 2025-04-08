@@ -30,7 +30,7 @@ mkdir -p $OUTPUT_DIR
 # 运行测试脚本
 python test_model.py \
     --base_model $BASE_MODEL \
-    --lora_model $LORA_MODEL \
+    # --lora_model $LORA_MODEL \
     --test_data $TEST_DATA \
     --output_file $OUTPUT_FILE \
     --bleu_output $BLEU_OUTPUT \

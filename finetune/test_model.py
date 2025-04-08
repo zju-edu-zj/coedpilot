@@ -92,7 +92,7 @@ Related Historical Edits:
 
 def build_instruction_prompt(instruction: str):
     return '''
-You are a professional code editing assistant. You are a professional code editing assistant. Please generate only the code snippet to be inserted based on the provided information without any explanations or additional text.
+You are a professional code editing assistant. Please generate only the code snippet to be inserted based on the provided information without any explanations or additional text.
 ### Instruction:
 {}
 ### Response:
@@ -168,9 +168,11 @@ def main():
         use_cache=True  # 启用KV缓存以加速生成
     )
     
-    # 加载LoRA权重
-    print(f"正在加载LoRA权重: {args.lora_model}")
-    model = PeftModel.from_pretrained(model, args.lora_model)
+    # 加载LoRA权重（如果有的话）
+    if args.lora_model:
+        print(f"正在加载LoRA权重: {args.lora_model}")
+        model = PeftModel.from_pretrained(model, args.lora_model)
+
     model.eval()
     
     # 加载测试数据 (JSONL格式)
@@ -233,22 +235,22 @@ def main():
     with open(args.output_file, 'w', encoding='utf-8') as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
     
-    # 保存BLEU评估数据
-    bleu_output_path = os.path.join(os.path.dirname(args.output_file), args.bleu_output)
-    with open(bleu_output_path, 'w', encoding='utf-8') as f:
-        json.dump(bleu_output_dict, f, ensure_ascii=False, indent=2)
+    # # 保存BLEU评估数据
+    # bleu_output_path = os.path.join(os.path.dirname(args.output_file), args.bleu_output)
+    # with open(bleu_output_path, 'w', encoding='utf-8') as f:
+    #     json.dump(bleu_output_dict, f, ensure_ascii=False, indent=2)
     
-    # 计算BLEU分数
-    try:
-        (goldMap, predictionMap) = bleu.computeMaps_multiple(bleu_output_path, args.beam_size)
-        bleu_score = round(bleu.bleuFromMaps(goldMap, predictionMap)[0], 2)
-        print(f"BLEU分数: {bleu_score}")
+    # # 计算BLEU分数
+    # try:
+    #     (goldMap, predictionMap) = bleu.computeMaps_multiple(bleu_output_path, args.beam_size)
+    #     bleu_score = round(bleu.bleuFromMaps(goldMap, predictionMap)[0], 2)
+    #     print(f"BLEU分数: {bleu_score}")
         
-        # 将BLEU分数添加到结果文件中
-        with open(os.path.join(os.path.dirname(args.output_file), "bleu_score.txt"), 'w') as f:
-            f.write(f"BLEU分数: {bleu_score}\n")
-    except Exception as e:
-        print(f"计算BLEU分数时出错: {e}")
+    #     # 将BLEU分数添加到结果文件中
+    #     with open(os.path.join(os.path.dirname(args.output_file), "bleu_score.txt"), 'w') as f:
+    #         f.write(f"BLEU分数: {bleu_score}\n")
+    # except Exception as e:
+    #     print(f"计算BLEU分数时出错: {e}")
     
     print(f"测试完成，结果已保存到 {args.output_file}")
 

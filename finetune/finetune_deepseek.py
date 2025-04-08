@@ -103,7 +103,7 @@ Related Historical Edits:
 
 def build_instruction_prompt(instruction: str):
     return '''
-You are a professional code editing assistant. You are a professional code editing assistant. Please generate only the code snippet to be inserted based on the provided information without any explanations or additional text.
+You are a professional code editing assistant. Please generate only the code snippet to be inserted based on the provided information without any explanations or additional text.
 ### Instruction:
 {}
 ### Response:
