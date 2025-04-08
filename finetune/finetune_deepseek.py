@@ -287,7 +287,7 @@ def train_or_test():
         model.print_trainable_parameters()  # 打印可训练参数比例
 
     if training_args.do_train:
-        # 加载训练数据集
+        # 加载训练数据集 (JSONL格式)
         raw_train_datasets = load_dataset(
             'json',
             data_files=data_args.data_path,
@@ -320,11 +320,11 @@ def train_or_test():
         train_dataset = None
 
     if training_args.do_eval:
-        # 加载测试数据集
+        # 加载测试数据集 (JSONL格式)
         raw_test_datasets = load_dataset(
             'json',
             data_files=data_args.test_data_path,
-            split="test",
+            split="train",  # 使用train分割，因为jsonl文件没有预定义的分割
             cache_dir=training_args.cache_dir
         )
         test_dataset = raw_test_datasets.map(

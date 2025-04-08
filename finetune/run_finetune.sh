@@ -5,10 +5,10 @@
 # export PYTHONPATH="$PYTHONPATH:$(pwd)"
 
 # 训练数据路径
-DATA_PATH="./data/train.json"
+DATA_PATH="data/train.jsonl"
 
 # 测试数据路径
-TEST_DATA_PATH="./data/test.json"
+TEST_DATA_PATH="data/test.jsonl"
 
 # 模型参数
 MODEL_NAME="deepseek-ai/deepseek-coder-1.3b-instruct"
@@ -36,7 +36,7 @@ MODE=${1:-both}
 
 # 运行训练和/或测试脚本
 if [ "$MODE" == "train" ] || [ "$MODE" == "both" ]; then
-    python lora/finetune_deepseek.py \
+    python finetune_deepseek.py \
         --model_name_or_path $MODEL_NAME \
         --data_path $DATA_PATH \
         --output_dir $OUTPUT_DIR \
@@ -60,7 +60,7 @@ if [ "$MODE" == "train" ] || [ "$MODE" == "both" ]; then
 fi
 
 if [ "$MODE" == "test" ] || [ "$MODE" == "both" ]; then
-    python lora/finetune_deepseek.py \
+    python finetune_deepseek.py \
         --model_name_or_path $MODEL_NAME \
         --test_data_path $TEST_DATA_PATH \
         --output_dir $OUTPUT_DIR \

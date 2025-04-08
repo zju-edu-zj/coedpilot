@@ -146,10 +146,13 @@ def main():
     model = PeftModel.from_pretrained(model, args.lora_model)
     model.eval()
     
-    # 加载测试数据
+    # 加载测试数据 (JSONL格式)
     print(f"正在加载测试数据: {args.test_data}")
+    test_data = []
     with open(args.test_data, 'r', encoding='utf-8') as f:
-        test_data = [json.loads(line) for line in f]
+        for line in f:
+            if line.strip():  # 跳过空行
+                test_data.append(json.loads(line))
     
     if args.max_samples:
         test_data = test_data[:args.max_samples]

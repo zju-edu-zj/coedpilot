@@ -10,7 +10,7 @@ BASE_MODEL="deepseek-ai/deepseek-coder-1.3b-instruct"
 LORA_MODEL="./output/deepseek-lora"
 
 # 测试数据路径
-TEST_DATA="./data/test.json"
+TEST_DATA="./data/test.jsonl"
 
 # 输出文件
 OUTPUT_FILE="./test_results.json"
