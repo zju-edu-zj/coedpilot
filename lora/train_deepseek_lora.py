@@ -30,6 +30,41 @@ from peft import (
 )
 from tqdm import tqdm, trange
 import bleu
+import warnings
+import transformers.generation.utils
+from torch.utils.tensorboard import SummaryWriter
+
+# 添加方法二的代码在这里
+import transformers.generation.utils
+
+# 直接修补generate方法中的警告检查
+original_generate = transformers.generation.utils.GenerationMixin.generate
+
+def patched_generate(self, *args, **kwargs):
+    # 保存原始的logger.warning函数
+    original_warning = transformers.generation.utils.logger.warning
+    
+    # 创建一个过滤特定警告的函数
+    def filtered_warning(message, *args, **kwargs):
+        if "right-padding was detected" not in message:
+            original_warning(message, *args, **kwargs)
+    
+    # 替换warning函数
+    transformers.generation.utils.logger.warning = filtered_warning
+    
+    # 调用原始generate函数
+    result = original_generate(self, *args, **kwargs)
+    
+    # 恢复原始warning函数
+    transformers.generation.utils.logger.warning = original_warning
+    
+    return result
+
+# 替换原始函数
+transformers.generation.utils.GenerationMixin.generate = patched_generate
+
+# 使用部分匹配来过滤关于padding_side的警告
+warnings.filterwarnings("ignore", message=".*padding was detected.*")
 
 # 导入数据处理功能
 from data_processor import (
@@ -49,7 +84,6 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-
 
 class Example(object):
     """A single training/test example."""
@@ -192,11 +226,27 @@ def main():
         help='Directory to save processed features if --save_processed_data is set.',
     )
     
-    # New command line arguments
-    parser.add_argument('--fp16', action='store_true', help='Use mixed precision training')
-    parser.add_argument('--max_train_samples', type=int, default=None, help='Maximum number of training samples')
-    parser.add_argument('--eval_steps', type=int, default=1000, help='Evaluation steps')
-    parser.add_argument('--save_steps', type=int, default=1000, help='Save checkpoint steps')
+    parser.add_argument('--max_train_samples', type=int, default=None, help='训练时使用的最大样本数量')
+    parser.add_argument('--max_eval_samples', type=int, default=None, help='评估时使用的最大样本数量')
+    parser.add_argument('--eval_every_n_epochs', type=int, default=1, help='每隔多少个epoch评估一次')
+    
+    # New parameters for testing
+    parser.add_argument('--max_test_samples', type=int, default=None, help='测试时使用的最大样本数量')
+    parser.add_argument('--test_batch_size', type=int, default=None, help='测试时使用的批量大小，默认与eval_batch_size相同')
+    
+    # 添加TensorBoard相关参数
+    parser.add_argument(
+        '--tensorboard_dir',
+        default=None,
+        type=str,
+        help='TensorBoard日志目录，默认为output_dir/runs',
+    )
+    parser.add_argument(
+        '--log_steps',
+        default=10,
+        type=int,
+        help='每多少步记录一次训练损失到TensorBoard',
+    )
     
     args = parser.parse_args()
     logger.info(args)
@@ -213,12 +263,27 @@ def main():
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
+    # 设置TensorBoard日志目录
+    if args.tensorboard_dir is None:
+        # 添加时间戳以区分不同运行
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        args.tensorboard_dir = os.path.join(args.output_dir, f'runs_{timestamp}')
+    else:
+        # 如果用户指定了目录，可以选择是否添加时间戳
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        args.tensorboard_dir = os.path.join(args.tensorboard_dir, timestamp)
+
+    # 确保目录存在
+    os.makedirs(args.tensorboard_dir, exist_ok=True)
+
     # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
     # 设置左侧填充
-    logger.info(f"tokenizer padding side: {tokenizer.padding_side}")
-    tokenizer.padding_side = 'left'
-    logger.info(f"current tokenizer padding side: {tokenizer.padding_side}")
+    # logger.info(f"tokenizer padding side: {tokenizer.padding_side}")
+    # tokenizer.padding_side = 'left'
+    # logger.info(f"current tokenizer padding side: {tokenizer.padding_side}")
     special_tokens = {
         "additional_special_tokens": [
             "<ADD_CODE>", 
@@ -305,6 +370,10 @@ def main():
     logger.info(f"调整后的embedding层大小: {model.get_input_embeddings().weight.shape}")
     
     if args.do_train:
+        # 初始化TensorBoard
+        tb_writer = SummaryWriter(args.tensorboard_dir)
+        logger.info(f"TensorBoard日志将保存到: {args.tensorboard_dir}")
+        
         if args.processed_data_dir:
             # 从处理好的文件加载特征
             train_features = load_features(os.path.join(args.processed_data_dir, 'train_features.pt'))
@@ -346,14 +415,6 @@ def main():
             optimizer, num_warmup_steps=int(t_total * 0.1), num_training_steps=t_total
         )
         
-        # 修改训练循环以使用混合精度
-        if args.fp16:
-            from torch.cuda.amp import autocast, GradScaler
-            scaler = GradScaler()
-            logger.info("Using mixed precision training (FP16)")
-        else:
-            scaler = None
-        
         # 开始训练
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_features))
@@ -378,54 +439,36 @@ def main():
                     logger.warning(f"Input IDs shape: {input_ids.shape}, Labels shape: {labels.shape}")
                     raise ValueError("输入和标签形状不匹配，请检查数据处理流程")
                 
-                # 使用混合精度训练
-                if args.fp16:
-                    with autocast():
-                        outputs = model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            labels=labels,
-                        )
-                        loss = outputs.loss
-                        
-                    if args.gradient_accumulation_steps > 1:
-                        loss = loss / args.gradient_accumulation_steps
-                        
-                    scaler.scale(loss).backward()
-                    epoch_loss += loss.item()
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                )
+                loss = outputs.loss
+                
+                if args.gradient_accumulation_steps > 1:
+                    loss = loss / args.gradient_accumulation_steps
                     
-                    if (step + 1) % args.gradient_accumulation_steps == 0:
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-                        scaler.step(optimizer)
-                        scaler.update()
-                        scheduler.step()
-                        optimizer.zero_grad()
-                        global_step += 1
-                else:
-                    # 原始训练代码
-                    outputs = model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        labels=labels,
-                    )
-                    loss = outputs.loss
+                loss.backward()
+                epoch_loss += loss.item()
+                
+                if (step + 1) % args.gradient_accumulation_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                    global_step += 1
                     
-                    if args.gradient_accumulation_steps > 1:
-                        loss = loss / args.gradient_accumulation_steps
-                        
-                    loss.backward()
-                    epoch_loss += loss.item()
-                    
-                    if (step + 1) % args.gradient_accumulation_steps == 0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-                        optimizer.step()
-                        scheduler.step()
-                        optimizer.zero_grad()
-                        global_step += 1
+                    # 记录训练损失到TensorBoard
+                    if global_step % args.log_steps == 0:
+                        tb_writer.add_scalar('train/loss', loss.item() * args.gradient_accumulation_steps, global_step)
+                        tb_writer.add_scalar('train/lr', scheduler.get_last_lr()[0], global_step)
                 
                 bar.set_postfix(loss=epoch_loss/(step+1))
             
+            # 记录每个epoch的平均损失
+            avg_epoch_loss = epoch_loss / len(train_dataloader)
+            tb_writer.add_scalar('train/epoch_loss', avg_epoch_loss, epoch)
             tr_loss += epoch_loss
             
             # 保存每个epoch的模型
@@ -434,22 +477,18 @@ def main():
                 os.makedirs(output_dir)
             model.save_pretrained(output_dir)
             tokenizer.save_pretrained(output_dir)
-            # # 更频繁地评估和保存
-            # if args.do_eval and global_step % args.eval_steps == 0:
-            #     # 评估代码...
-                
-            # if global_step % args.save_steps == 0:
-            #     # 保存检查点
-            #     model_to_save = model.module if hasattr(model, 'module') else model
-            #     output_dir = os.path.join(args.output_dir, f'checkpoint-{global_step}')
-            #     if not os.path.exists(output_dir):
-            #         os.makedirs(output_dir)
-            #     model_to_save.save_pretrained(output_dir)
-            #     tokenizer.save_pretrained(output_dir)
-            #     logger.info(f"Saved model checkpoint to {output_dir}")
             
             # 评估模型
-            if args.do_eval:
+            if args.do_eval and (epoch + 1) % args.eval_every_n_epochs == 0:
+                # 保存当前模型状态
+                model_was_training = model.training
+                
+                # 启用缓存以加速生成
+                model.config.use_cache = True
+                
+                # 设置为评估模式
+                model.eval()
+                
                 if args.processed_data_dir:
                     eval_features = load_features(os.path.join(args.processed_data_dir, 'dev_features.pt'))
                     # 需要加载原始示例用于评估
@@ -457,6 +496,14 @@ def main():
                 else:
                     logger.info("unexpected, please save processed data first")
                     exit()
+                
+                # 限制评估样本数量以加速验证
+                max_eval_samples = min(len(eval_features), args.max_eval_samples if args.max_eval_samples else len(eval_features))
+                if max_eval_samples < len(eval_features):
+                    logger.info(f"使用 {max_eval_samples} 个样本进行评估 (共 {len(eval_features)} 个)")
+                    # 随机采样或使用前N个样本
+                    eval_features = eval_features[:max_eval_samples]
+                    eval_examples = eval_examples[:max_eval_samples]
                 
                 all_input_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
                 all_attention_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)
@@ -471,7 +518,6 @@ def main():
                 logger.info("  Num examples = %d", len(eval_features))
                 logger.info("  Batch size = %d", args.eval_batch_size)
                 
-                model.eval()
                 predictions = []
                 
                 # 确保pad_token_id已设置
@@ -492,7 +538,11 @@ def main():
                             num_return_sequences=1,
                             do_sample=False,
                             early_stopping=True,
-                            pad_token_id=model.config.pad_token_id,  # 明确设置pad_token_id
+                            pad_token_id=model.config.pad_token_id,
+                            # 添加以下参数以加速生成
+                            repetition_penalty=1.0,
+                            length_penalty=1.0,
+                            no_repeat_ngram_size=0,
                         )
                     
                     for i, g_ids in enumerate(generated_ids):
@@ -501,11 +551,16 @@ def main():
                         gen_text = tokenizer.decode(g_ids[input_length:], skip_special_tokens=True)
                         predictions.append(gen_text)
                 
+                # 恢复原始状态
+                model.config.use_cache = False
+                if model_was_training:
+                    model.train()
+                
                 # 计算BLEU分数
                 references = [ex.target for ex in eval_examples]
                 bleu_output_dict = {}
                 for idx, (pred, ex) in enumerate(zip(predictions, eval_examples)):
-                    bleu_output_dict[str(ex.idx)] = ([pred], ex.target)  # 注意这里将单个预测包装成列表
+                    bleu_output_dict[str(ex.idx)] = ([pred], ex.target)
                 
                 with open(os.path.join(args.output_dir, f'eval_epoch_{epoch}_pred_gold.json'), 'w') as f:
                     json.dump(bleu_output_dict, f, indent=2)
@@ -516,7 +571,21 @@ def main():
                     1  # 因为eval只有一个预测，所以beam_size=1
                 )
                 bleu_score = round(bleu.bleuFromMaps(goldMap, predictionMap)[0], 2)
+                
+                # 记录BLEU分数到TensorBoard
+                tb_writer.add_scalar('eval/bleu', bleu_score, epoch)
                 logger.info(f"Evaluate BLEU score at epoch {epoch}: {bleu_score}")
+                
+                # 记录一些生成示例到TensorBoard
+                num_examples = min(5, len(predictions))
+                for i in range(num_examples):
+                    tb_writer.add_text(
+                        f'eval/example_{i}',
+                        f"**Source**: {tokenizer.decode(eval_features[i].source_ids, skip_special_tokens=True)}\n\n"
+                        f"**Prediction**: {predictions[i]}\n\n"
+                        f"**Target**: {eval_examples[i].target}",
+                        epoch
+                    )
                 
                 # 保存最佳模型
                 if bleu_score > best_bleu:
@@ -526,15 +595,21 @@ def main():
                         os.makedirs(output_dir)
                     model.save_pretrained(output_dir)
                     tokenizer.save_pretrained(output_dir)
-                
-                model.train()
         
         # 保存最终模型
         model.save_pretrained(args.output_dir)
         tokenizer.save_pretrained(args.output_dir)
+        
+        # 关闭TensorBoard写入器
+        tb_writer.close()
     
     # 测试模型
     if args.do_test:
+        # 初始化TensorBoard (如果尚未初始化)
+        if not args.do_train:
+            tb_writer = SummaryWriter(args.tensorboard_dir)
+            logger.info(f"TensorBoard日志将保存到: {args.tensorboard_dir}")
+        
         if args.processed_data_dir:
             test_features = load_features(os.path.join(args.processed_data_dir, 'test_features.pt'))
             test_examples = read_examples(args.test_filename)
@@ -542,8 +617,6 @@ def main():
             # 直接处理测试数据
             logger.info("处理测试数据...")
             test_examples = read_examples(args.test_filename)
-            # 确保tokenizer使用左侧填充
-            tokenizer.padding_side = 'left'
             test_features, prompts = convert_examples_to_features(
                 examples=test_examples,
                 tokenizer=tokenizer,
@@ -551,13 +624,19 @@ def main():
             )
             logger.info(f"处理了 {len(test_features)} 条测试特征，prompt: {prompts}")
         
+        # 限制测试样本数量
+        max_test_samples = min(len(test_features), args.max_test_samples if args.max_test_samples else len(test_features))
+        if max_test_samples < len(test_features):
+            logger.info(f"使用 {max_test_samples} 个样本进行测试 (共 {len(test_features)} 个)")
+            # 随机采样或使用前N个样本
+            test_features = test_features[:max_test_samples]
+            test_examples = test_examples[:max_test_samples]
+        
         # 加载最佳模型
         best_model_path = os.path.join(args.output_dir, 'checkpoint-best-bleu')
         if os.path.exists(best_model_path):
-            # 修改这里：确保使用与训练时相同的tokenizer
             tokenizer = AutoTokenizer.from_pretrained(best_model_path, trust_remote_code=True)
             logger.info(f"len of tokenizer: {len(tokenizer)}, vocab size: {tokenizer.vocab_size}")
-            # 加载模型时确保使用正确的配置
             model = AutoModelForCausalLM.from_pretrained(
                 best_model_path,
                 trust_remote_code=True,
@@ -567,20 +646,23 @@ def main():
             )
         else:
             logger.info("找不到最佳模型，使用预训练模型")
-            # 确保在推理时启用缓存
             model.config.use_cache = True
+            
+        # 使用更大的批量大小进行测试
+        test_batch_size = args.test_batch_size if args.test_batch_size else args.eval_batch_size
+        
         all_input_ids = torch.tensor([f.source_ids for f in test_features], dtype=torch.long)
         all_attention_mask = torch.tensor([f.source_mask for f in test_features], dtype=torch.long)
         test_data = TensorDataset(all_input_ids, all_attention_mask)
         
         test_sampler = SequentialSampler(test_data)
         test_dataloader = DataLoader(
-            test_data, sampler=test_sampler, batch_size=args.eval_batch_size
+            test_data, sampler=test_sampler, batch_size=test_batch_size
         )
         
         logger.info("***** Running testing *****")
         logger.info("  Num examples = %d", len(test_examples))
-        logger.info("  Batch size = %d", args.eval_batch_size)
+        logger.info("  Batch size = %d", test_batch_size)
         
         model.eval()
         predictions = []
@@ -603,7 +685,11 @@ def main():
                     num_return_sequences=args.beam_size,
                     do_sample=False,
                     early_stopping=True,
-                    pad_token_id=model.config.pad_token_id,  # 明确设置pad_token_id
+                    pad_token_id=model.config.pad_token_id,
+                    # 添加以下参数以加速生成
+                    repetition_penalty=1.0,
+                    length_penalty=1.0,
+                    no_repeat_ngram_size=0,
                 )
             
             for i, beam_outputs in enumerate(generated_ids.reshape(input_ids.shape[0], args.beam_size, -1)):
@@ -633,7 +719,24 @@ def main():
             args.beam_size
         )
         bleu_score = round(bleu.bleuFromMaps(goldMap, predictionMap)[0], 2)
-        logger.info(f"Test BLEU score: {bleu_score}")
+        
+        # 记录测试BLEU分数到TensorBoard
+        tb_writer.add_scalar('test/bleu', bleu_score, 0)
+        
+        # 记录一些测试示例到TensorBoard
+        num_examples = min(10, len(predictions))
+        for i in range(num_examples):
+            tb_writer.add_text(
+                f'test/example_{i}',
+                f"**Source**: {tokenizer.decode(test_features[i].source_ids, skip_special_tokens=True)}\n\n"
+                f"**Prediction (Top-1)**: {predictions[i][0]}\n\n"
+                f"**Target**: {test_examples[i].target}",
+                0
+            )
+        
+        # 关闭TensorBoard写入器
+        if not args.do_train:
+            tb_writer.close()
 
 
 if __name__ == '__main__':
